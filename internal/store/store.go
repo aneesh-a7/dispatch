@@ -8,7 +8,7 @@
 // durably recorded, so a crash between "decided" and "applied" is
 // recoverable by replay instead of lost.
 //
-// It deliberately does NOT do log compaction/snapshotting — the log
+// It deliberately does NOT do log compaction/snapshotting. The log
 // grows forever. That's a known, named limitation (see docs/ARCHITECTURE.md)
 // rather than an oversight: a compaction pass that periodically rewrites
 // the log to only current state is the natural next step.
@@ -113,7 +113,7 @@ func (s *Store) replay() error {
 		var rec record
 		if err := json.Unmarshal(line, &rec); err != nil {
 			// A malformed trailing line usually means the process died
-			// mid-write. We skip it rather than fail startup entirely —
+			// mid-write. We skip it rather than fail startup entirely:
 			// losing the last unflushed record is expected WAL behavior;
 			// silently corrupting earlier history would not be.
 			fmt.Fprintf(os.Stderr, "store: skipping malformed WAL line %d: %v\n", lineNum, err)
@@ -153,7 +153,7 @@ func (s *Store) append(rec record) error {
 	// Sync is the whole point: without it, a crash right after Write can
 	// lose data still sitting in the OS page cache. This is also why
 	// this store will not win any throughput benchmarks against an
-	// in-memory map — durability has a cost, and that trade-off is the
+	// in-memory map. Durability has a cost, and that trade-off is the
 	// point of the exercise.
 	if err := s.logFile.Sync(); err != nil {
 		return err
@@ -208,7 +208,7 @@ func (s *Store) ListJobs() []*types.Job {
 // marks it running and assigned to workerID, persists that transition,
 // and returns it. Doing the "find + mutate + persist" sequence under a
 // single lock is what prevents two workers from racing to lease the same
-// job — the classic double-dispatch bug in naive queue implementations.
+// job: the classic double-dispatch bug in naive queue implementations.
 func (s *Store) LeaseNextJob(workerID string) (*types.Job, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -3,8 +3,8 @@
 // heartbeats so the reaper knows it's alive, and polls for work.
 //
 // Week 1 executes jobs as plain subprocesses (os/exec). Sandboxing
-// (containers/namespaces) is planned as a later layer — see
-// docs/ARCHITECTURE.md — and is deliberately not in week 1's scope so
+// (containers/namespaces) is planned as a later layer (see
+// docs/ARCHITECTURE.md) and is deliberately not in week 1's scope so
 // that leasing/execution/reporting can be gotten right first.
 package main
 
@@ -51,7 +51,7 @@ func heartbeatLoop(c *client.Client, workerID string, interval time.Duration, st
 			return
 		case <-ticker.C:
 			if err := c.Heartbeat(workerID); err != nil {
-				// A single missed heartbeat isn't fatal — the control
+				// A single missed heartbeat isn't fatal. The control
 				// plane tolerates several missed beats (heartbeat-ttl)
 				// before declaring this worker dead. Log and keep going.
 				log.Printf("worker: heartbeat failed: %v", err)
@@ -89,7 +89,7 @@ func pollLoop(c *client.Client, workerID string, pollInterval, jobTimeout time.D
 		if err := c.CompleteJob(job.ID, completion); err != nil {
 			// The job did run (or fail) but the control plane doesn't
 			// know yet. If this worker now dies, the reaper's heartbeat
-			// timeout will eventually requeue the job — at-least-once
+			// timeout will eventually requeue the job: at-least-once
 			// execution, not exactly-once. That trade-off (and how to
 			// tighten it) belongs in docs/ARCHITECTURE.md, not silently
 			// swept under the rug here.

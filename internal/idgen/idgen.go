@@ -1,5 +1,5 @@
 // Package idgen generates IDs that are both unique and lexicographically
-// sortable by creation time — useful for skimming a data directory or
+// sortable by creation time: useful for skimming a data directory or
 // log file and immediately seeing chronological order, without needing
 // a real UUID library as a dependency for something this small.
 package idgen

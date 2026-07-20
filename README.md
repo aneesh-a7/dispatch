@@ -14,7 +14,7 @@ pull work and report back.
 It is not Kubernetes. It does not try to be. It's scoped to the parts of
 "distributed job scheduling" that are actually hard and actually
 interesting: durable state, failure detection, and at-least-once
-execution — without the surface area of a real orchestrator.
+execution, without the surface area of a real orchestrator.
 
 ## How it works
 
@@ -34,7 +34,7 @@ execution — without the surface area of a real orchestrator.
   (dead-worker detection).
 - **Worker**: stateless. Registers, heartbeats, polls for a job, runs it
   as a subprocess, reports the result. Can be killed and restarted
-  freely — it holds no state the control plane depends on.
+  freely: it holds no state the control plane depends on.
 - **dispatchctl**: CLI for submitting jobs and checking status.
 
 Workers *pull* work rather than having it pushed to them. This means the
@@ -43,12 +43,12 @@ problems) and workers can come and go without the control plane needing
 to know anything about their reachability ahead of time.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design
-decisions and trade-offs — what this does, what it deliberately doesn't
+decisions and trade-offs: what this does, what it deliberately doesn't
 do yet, and why.
 
 ## Quickstart
 
-Requires Go 1.22+. No external dependencies — pure standard library.
+Requires Go 1.22+. No external dependencies, pure standard library.
 
 ```bash
 # Terminal 1: start the control plane
@@ -85,7 +85,7 @@ disappears because its worker vanished.
 
 Kill `-9` the control plane process and restart it against the same
 `-data-dir`. It replays its write-ahead log on startup and comes back
-with every job and worker exactly where it left off — nothing is lost
+with every job and worker exactly where it left off. Nothing is lost
 except whatever hadn't been fsync'd yet (which, by construction, is
 nothing that was ever acknowledged to a caller).
 

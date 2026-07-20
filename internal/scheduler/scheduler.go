@@ -1,6 +1,6 @@
 // Package scheduler contains the control plane's scheduling and failure
-// detection logic. It is intentionally thin in week 1 — priority/FIFO
-// leasing plus dead-worker detection — with resource-aware bin-packing
+// detection logic. It is intentionally thin in week 1: priority/FIFO
+// leasing plus dead-worker detection, with resource-aware bin-packing
 // planned as the next layer on top (see docs/ARCHITECTURE.md).
 package scheduler
 
@@ -13,7 +13,7 @@ import (
 )
 
 // Scheduler wraps the store with scheduling policy. Today that policy is
-// "highest priority, then oldest, wins" (see store.LeaseNextJob) — the
+// "highest priority, then oldest, wins" (see store.LeaseNextJob). The
 // scheduler package exists as a seam so smarter policies (resource
 // bin-packing, affinity, fairness across submitters) can be swapped in
 // without changing the API or store layers.
@@ -33,7 +33,7 @@ func (sc *Scheduler) Lease(workerID string) (*types.Job, bool) {
 
 // Reaper periodically scans for workers that have gone silent and
 // reclaims their in-flight work. Distributed systems fail by having
-// components disappear without saying goodbye — a scheduler that only
+// components disappear without saying goodbye. A scheduler that only
 // handles the happy path where every worker calls "complete" isn't
 // really a scheduler yet.
 type Reaper struct {

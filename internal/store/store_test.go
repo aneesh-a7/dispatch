@@ -162,7 +162,7 @@ func TestReplay_RecoversStateAfterReopen(t *testing.T) {
 		t.Fatalf("Close() error = %v", err)
 	}
 
-	// Reopen against the same directory — simulates a process restart.
+	// Reopen against the same directory: simulates a process restart.
 	s2, err := Open(dir)
 	if err != nil {
 		t.Fatalf("second Open() error = %v", err)

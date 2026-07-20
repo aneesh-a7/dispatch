@@ -51,8 +51,8 @@ const (
 )
 
 // Worker is a machine/process capable of executing jobs. Workers pull
-// work from the control plane rather than having work pushed to them —
-// this keeps the control plane from needing to know about worker network
+// work from the control plane rather than having work pushed to them.
+// This keeps the control plane from needing to know about worker network
 // reachability, which matters once workers are behind NAT/firewalls.
 type Worker struct {
 	ID      string `json:"id"`

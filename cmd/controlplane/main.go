@@ -1,6 +1,6 @@
 // Command controlplane runs the dispatch control plane: the HTTP API,
 // the durable job/worker store, the scheduler, and the dead-worker
-// reaper. It is the single stateful component in the system — workers
+// reaper. It is the single stateful component in the system: workers
 // and the CLI are stateless and can be killed and restarted freely.
 package main
 

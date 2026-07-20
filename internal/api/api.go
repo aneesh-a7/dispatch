@@ -1,5 +1,5 @@
 // Package api exposes the control plane's HTTP interface. Workers and
-// the CLI both talk to this same API — there is no separate internal
+// the CLI both talk to this same API. There is no separate internal
 // protocol, which keeps the system easy to reason about and easy to
 // test with plain curl.
 package api
