@@ -1,0 +1,4 @@
+bin/
+data/
+*.wal
+.DS_Store
