@@ -1,0 +1,178 @@
+:root {
+  --bg: #0d1117;
+  --panel: #161b22;
+  --border: #30363d;
+  --text: #c9d1d9;
+  --muted: #8b949e;
+  --accent: #58a6ff;
+
+  --pending: #8b949e;
+  --running: #58a6ff;
+  --succeeded: #3fb950;
+  --failed: #f85149;
+  --alive: #3fb950;
+  --dead: #f85149;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: ui-monospace, "SF Mono", "Cascadia Code", Consolas, monospace;
+  font-size: 14px;
+}
+
+header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--border);
+}
+
+header h1 {
+  margin: 0;
+  font-size: 18px;
+  letter-spacing: 0.02em;
+}
+
+.conn-status {
+  font-size: 12px;
+  color: var(--muted);
+}
+.conn-status.ok { color: var(--succeeded); }
+.conn-status.error { color: var(--failed); }
+
+main {
+  max-width: 1000px;
+  margin: 0 auto;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 16px 20px;
+}
+
+.panel h2 {
+  margin: 0 0 12px 0;
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+
+.count {
+  font-weight: normal;
+  color: var(--muted);
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th, td {
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+th {
+  color: var(--muted);
+  font-weight: normal;
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+tbody tr:last-child td { border-bottom: none; }
+
+.empty {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 8px 0 0 0;
+}
+
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.badge.pending    { color: var(--pending);   background: color-mix(in srgb, var(--pending) 15%, transparent); }
+.badge.running    { color: var(--running);   background: color-mix(in srgb, var(--running) 15%, transparent); }
+.badge.succeeded  { color: var(--succeeded); background: color-mix(in srgb, var(--succeeded) 15%, transparent); }
+.badge.failed     { color: var(--failed);    background: color-mix(in srgb, var(--failed) 15%, transparent); }
+.badge.alive      { color: var(--alive);     background: color-mix(in srgb, var(--alive) 15%, transparent); }
+.badge.dead       { color: var(--dead);      background: color-mix(in srgb, var(--dead) 15%, transparent); }
+
+form#submit-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 12px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1 1 160px;
+}
+.field.small { flex: 0 0 90px; }
+
+.field label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.hint {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+input {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: 13px;
+}
+input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+button {
+  background: var(--accent);
+  color: #0d1117;
+  border: none;
+  border-radius: 4px;
+  padding: 7px 16px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+button:hover { opacity: 0.9; }
+button:disabled { opacity: 0.5; cursor: default; }
+
+.feedback {
+  font-size: 12px;
+  color: var(--muted);
+}
+.feedback.ok { color: var(--succeeded); }
+.feedback.error { color: var(--failed); }

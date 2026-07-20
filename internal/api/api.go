@@ -15,6 +15,7 @@ import (
 	"github.com/aneesh/dispatch/internal/scheduler"
 	"github.com/aneesh/dispatch/internal/store"
 	"github.com/aneesh/dispatch/internal/types"
+	"github.com/aneesh/dispatch/internal/webui"
 )
 
 type Server struct {
@@ -50,6 +51,11 @@ func (s *Server) routes() {
 
 	s.mux.HandleFunc("GET /healthz", s.handleHealthz)
 	s.mux.HandleFunc("GET /metrics", s.handleMetrics)
+
+	// Dashboard: catch-all, lowest priority in Go 1.22's pattern matching,
+	// so every /v1/* route above still wins. Served on the same port as
+	// the API: one process, one port, nothing extra to deploy.
+	s.mux.Handle("/", webui.Handler())
 }
 
 // --- request/response payloads -----------------------------------------

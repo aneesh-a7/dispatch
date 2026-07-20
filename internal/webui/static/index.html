@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>dispatch</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header>
+    <h1>dispatch</h1>
+    <div id="conn-status" class="conn-status">connecting&hellip;</div>
+  </header>
+
+  <main>
+    <section class="panel">
+      <h2>Submit a job</h2>
+      <form id="submit-form">
+        <div class="field">
+          <label for="command">Command</label>
+          <input id="command" name="command" type="text" placeholder="echo" required />
+        </div>
+        <div class="field">
+          <label for="args">Args</label>
+          <input id="args" name="args" type="text" placeholder="hello dispatch" />
+          <span class="hint">space-separated</span>
+        </div>
+        <div class="field small">
+          <label for="priority">Priority</label>
+          <input id="priority" name="priority" type="number" value="0" />
+        </div>
+        <div class="field small">
+          <label for="retries">Max retries</label>
+          <input id="retries" name="retries" type="number" value="0" min="0" />
+        </div>
+        <button type="submit">Submit</button>
+        <span id="submit-feedback" class="feedback"></span>
+      </form>
+    </section>
+
+    <section class="panel">
+      <h2>Workers <span id="worker-count" class="count"></span></h2>
+      <table id="workers-table">
+        <thead>
+          <tr><th>ID</th><th>Address</th><th>Status</th><th>Last heartbeat</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <p class="empty" id="workers-empty">No workers registered yet.</p>
+    </section>
+
+    <section class="panel">
+      <h2>Jobs <span id="job-count" class="count"></span></h2>
+      <table id="jobs-table">
+        <thead>
+          <tr><th>ID</th><th>Status</th><th>Command</th><th>Priority</th><th>Retries</th><th>Worker</th><th>Updated</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <p class="empty" id="jobs-empty">No jobs submitted yet.</p>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

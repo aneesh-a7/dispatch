@@ -65,7 +65,11 @@ go run ./cmd/dispatchctl list
 go run ./cmd/dispatchctl status <job-id>
 ```
 
-Multiple workers can be started against the same control plane — jobs
+Or open **http://localhost:8080** in a browser once the control plane is
+running: a live dashboard shows jobs and workers updating in real time,
+with a form to submit new jobs without touching the CLI.
+
+Multiple workers can be started against the same control plane. Jobs
 are leased to whichever worker polls first, one at a time, with no
 double-dispatch (see `Store.LeaseNextJob`).
 
@@ -107,6 +111,7 @@ internal/
   api/            HTTP handlers
   client/         typed HTTP client (shared by worker + CLI)
   idgen/          stdlib-only sortable ID generation
+  webui/          embedded live dashboard (static HTML/CSS/JS, served by the control plane)
 docs/
   ARCHITECTURE.md design decisions, trade-offs, what's deliberately out of scope
 ```
