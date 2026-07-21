@@ -69,15 +69,26 @@ func (c *Client) do(method, path string, body, out any) error {
 // --- Job endpoints ---------------------------------------------------
 
 type SubmitJobRequest struct {
-	Command    string   `json:"command"`
-	Args       []string `json:"args"`
-	Priority   int      `json:"priority"`
-	MaxRetries int      `json:"max_retries"`
+	Command    string          `json:"command"`
+	Args       []string        `json:"args"`
+	Priority   int             `json:"priority"`
+	MaxRetries int             `json:"max_retries"`
+	Resources  types.Resources `json:"resources"`
 }
 
 func (c *Client) SubmitJob(req SubmitJobRequest) (*types.Job, error) {
 	var job types.Job
 	if err := c.do(http.MethodPost, "/v1/jobs", req, &job); err != nil {
+		return nil, err
+	}
+	return &job, nil
+}
+
+// CancelJob asks the control plane to stop a job: dropped outright if it
+// is still pending, or signalled to its worker to be killed if running.
+func (c *Client) CancelJob(id string) (*types.Job, error) {
+	var job types.Job
+	if err := c.do(http.MethodDelete, "/v1/jobs/"+id, nil, &job); err != nil {
 		return nil, err
 	}
 	return &job, nil
@@ -101,10 +112,14 @@ func (c *Client) ListJobs() ([]*types.Job, error) {
 
 // --- Worker endpoints --------------------------------------------------
 
-func (c *Client) RegisterWorker(address string) (*types.Worker, error) {
+type RegisterWorkerRequest struct {
+	Address  string          `json:"address"`
+	Capacity types.Resources `json:"capacity"`
+}
+
+func (c *Client) RegisterWorker(req RegisterWorkerRequest) (*types.Worker, error) {
 	var w types.Worker
-	body := map[string]string{"address": address}
-	if err := c.do(http.MethodPost, "/v1/workers/register", body, &w); err != nil {
+	if err := c.do(http.MethodPost, "/v1/workers/register", req, &w); err != nil {
 		return nil, err
 	}
 	return &w, nil

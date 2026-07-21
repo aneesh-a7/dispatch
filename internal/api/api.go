@@ -41,6 +41,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/jobs", s.handleSubmitJob)
 	s.mux.HandleFunc("GET /v1/jobs", s.handleListJobs)
 	s.mux.HandleFunc("GET /v1/jobs/{id}", s.handleGetJob)
+	s.mux.HandleFunc("DELETE /v1/jobs/{id}", s.handleCancelJob)
 
 	s.mux.HandleFunc("POST /v1/workers/register", s.handleRegisterWorker)
 	s.mux.HandleFunc("GET /v1/workers", s.handleListWorkers)
@@ -66,15 +67,23 @@ func (s *Server) routes() {
 // --- request/response payloads -----------------------------------------
 
 type submitJobRequest struct {
-	Command    string   `json:"command"`
-	Args       []string `json:"args"`
-	Priority   int      `json:"priority"`
-	MaxRetries int      `json:"max_retries"`
+	Command    string          `json:"command"`
+	Args       []string        `json:"args"`
+	Priority   int             `json:"priority"`
+	MaxRetries int             `json:"max_retries"`
+	Resources  types.Resources `json:"resources"`
 }
 
 type registerWorkerRequest struct {
-	Address string `json:"address"`
+	Address  string          `json:"address"`
+	Capacity types.Resources `json:"capacity"`
 }
+
+// defaultWorkerCapacity is applied when a worker registers without stating
+// one, so a worker is never accidentally unable to run resource-tagged
+// jobs. The numbers are arbitrary units, sized so a handful of small jobs
+// pack onto one worker.
+var defaultWorkerCapacity = types.Resources{CPU: 4, Memory: 4096}
 
 type completeJobRequest struct {
 	Status types.JobStatus `json:"status"` // "succeeded" or "failed"
@@ -97,6 +106,12 @@ func (s *Server) handleSubmitJob(w http.ResponseWriter, r *http.Request) {
 	if req.MaxRetries < 0 {
 		req.MaxRetries = 0
 	}
+	if req.Resources.CPU < 0 {
+		req.Resources.CPU = 0
+	}
+	if req.Resources.Memory < 0 {
+		req.Resources.Memory = 0
+	}
 
 	now := time.Now().UTC()
 	job := &types.Job{
@@ -104,6 +119,7 @@ func (s *Server) handleSubmitJob(w http.ResponseWriter, r *http.Request) {
 		Command:    req.Command,
 		Args:       req.Args,
 		Priority:   req.Priority,
+		Resources:  req.Resources,
 		MaxRetries: req.MaxRetries,
 		Status:     types.JobPending,
 		CreatedAt:  now,
@@ -131,17 +147,57 @@ func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, job)
 }
 
+// handleCancelJob stops a job. A pending job is cancelled outright, since
+// no worker has it yet. A running job cannot be stopped from here (the
+// subprocess lives on the worker), so this sets CancelRequested and lets
+// the worker, which polls its own job, kill the process and report back
+// as cancelled. Already-finished jobs cannot be cancelled.
+func (s *Server) handleCancelJob(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	job, ok := s.store.GetJob(id)
+	if !ok {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	if job.Status.Terminal() {
+		writeError(w, http.StatusConflict, "job already "+string(job.Status))
+		return
+	}
+
+	now := time.Now().UTC()
+	job.UpdatedAt = now
+	if job.Status == types.JobPending {
+		job.Status = types.JobCancelled
+		job.FinishedAt = &now
+		log.Printf("api: cancelled pending job %s", id)
+	} else {
+		// running: signal the worker; it will do the actual killing.
+		job.CancelRequested = true
+		log.Printf("api: cancel requested for running job %s on worker %s", id, job.WorkerID)
+	}
+	if err := s.store.UpdateJob(job); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to persist cancellation: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
 func (s *Server) handleRegisterWorker(w http.ResponseWriter, r *http.Request) {
 	var req registerWorkerRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
 		return
 	}
+	capacity := req.Capacity
+	if capacity == (types.Resources{}) {
+		capacity = defaultWorkerCapacity
+	}
 	now := time.Now().UTC()
 	worker := &types.Worker{
 		ID:            idgen.New("worker"),
 		Address:       req.Address,
 		Status:        types.WorkerAlive,
+		Capacity:      capacity,
 		RegisteredAt:  now,
 		LastHeartbeat: now,
 	}
@@ -193,8 +249,8 @@ func (s *Server) handleCompleteJob(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
 		return
 	}
-	if req.Status != types.JobSucceeded && req.Status != types.JobFailed {
-		writeError(w, http.StatusBadRequest, `status must be "succeeded" or "failed"`)
+	if req.Status != types.JobSucceeded && req.Status != types.JobFailed && req.Status != types.JobCancelled {
+		writeError(w, http.StatusBadRequest, `status must be "succeeded", "failed", or "cancelled"`)
 		return
 	}
 
@@ -208,9 +264,12 @@ func (s *Server) handleCompleteJob(w http.ResponseWriter, r *http.Request) {
 	job.Output = req.Output
 	job.UpdatedAt = now
 	job.FinishedAt = &now
+	job.CancelRequested = false
 
 	if req.Status == types.JobFailed && job.Retries < job.MaxRetries {
 		// Still have retry budget: requeue instead of terminally failing.
+		// A cancellation never lands here; the user asked it to stop, so it
+		// stays stopped regardless of remaining retries.
 		job.Status = types.JobPending
 		job.Retries++
 		job.WorkerID = ""
@@ -236,35 +295,67 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("ok"))
 }
 
-// handleMetrics emits a minimal Prometheus text-format exposition. Real
-// counters (jobs leased, jobs failed, lease latency) are cheap to add on
-// top of this shape in week 2/3; the point in week 1 is that the
-// endpoint and format exist from day one rather than bolted on later.
+// handleMetrics emits a Prometheus text-format exposition. Beyond bare
+// status counts it reports the two latencies you actually reach for when
+// something feels slow: lease latency (how long a job waited in the queue
+// before a worker picked it up) and execution duration (how long it then
+// ran). Both are exposed as a running sum plus a count, the same shape
+// Prometheus histograms use for their _sum/_count, so a scrape can derive
+// an average without this endpoint keeping any state between calls.
 func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	jobs := s.store.ListJobs()
 	workers := s.store.ListWorkers()
 
 	counts := map[types.JobStatus]int{}
+	retriesTotal := 0
+	var leaseSum, execSum float64
+	var leaseCount, execCount int
 	for _, j := range jobs {
 		counts[j.Status]++
+		retriesTotal += j.Retries
+		if j.StartedAt != nil {
+			leaseSum += j.StartedAt.Sub(j.CreatedAt).Seconds()
+			leaseCount++
+			if j.FinishedAt != nil {
+				execSum += j.FinishedAt.Sub(*j.StartedAt).Seconds()
+				execCount++
+			}
+		}
 	}
+
 	aliveWorkers := 0
+	var capTotal, capAvail types.Resources
 	for _, wk := range workers {
 		if wk.Status == types.WorkerAlive {
 			aliveWorkers++
 		}
+		capTotal = capTotal.Plus(wk.Capacity)
+		capAvail = capAvail.Plus(wk.Available)
 	}
 
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
-	fmtLine := func(name string, v int) {
+	fmtInt := func(name string, v int) {
 		w.Write([]byte(name + " " + strconv.Itoa(v) + "\n"))
 	}
-	fmtLine("dispatch_jobs_pending", counts[types.JobPending])
-	fmtLine("dispatch_jobs_running", counts[types.JobRunning])
-	fmtLine("dispatch_jobs_succeeded", counts[types.JobSucceeded])
-	fmtLine("dispatch_jobs_failed", counts[types.JobFailed])
-	fmtLine("dispatch_workers_total", len(workers))
-	fmtLine("dispatch_workers_alive", aliveWorkers)
+	fmtFloat := func(name string, v float64) {
+		w.Write([]byte(name + " " + strconv.FormatFloat(v, 'f', 4, 64) + "\n"))
+	}
+	fmtInt("dispatch_jobs_pending", counts[types.JobPending])
+	fmtInt("dispatch_jobs_running", counts[types.JobRunning])
+	fmtInt("dispatch_jobs_succeeded", counts[types.JobSucceeded])
+	fmtInt("dispatch_jobs_failed", counts[types.JobFailed])
+	fmtInt("dispatch_jobs_cancelled", counts[types.JobCancelled])
+	fmtInt("dispatch_job_retries_total", retriesTotal)
+	fmtFloat("dispatch_lease_latency_seconds_sum", leaseSum)
+	fmtInt("dispatch_lease_latency_seconds_count", leaseCount)
+	fmtFloat("dispatch_execution_seconds_sum", execSum)
+	fmtInt("dispatch_execution_seconds_count", execCount)
+	fmtInt("dispatch_workers_total", len(workers))
+	fmtInt("dispatch_workers_alive", aliveWorkers)
+	fmtInt("dispatch_worker_cpu_total", capTotal.CPU)
+	fmtInt("dispatch_worker_cpu_available", capAvail.CPU)
+	fmtInt("dispatch_worker_memory_total", capTotal.Memory)
+	fmtInt("dispatch_worker_memory_available", capAvail.Memory)
 }
 
 // --- small helpers -------------------------------------------------------

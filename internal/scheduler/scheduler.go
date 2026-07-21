@@ -1,7 +1,9 @@
 // Package scheduler contains the control plane's scheduling and failure
-// detection logic. It is intentionally thin in week 1: priority/FIFO
-// leasing plus dead-worker detection, with resource-aware bin-packing
-// planned as the next layer on top (see docs/ARCHITECTURE.md).
+// detection logic: priority/FIFO leasing constrained by resource
+// bin-packing (see store.LeaseNextJob) plus dead-worker detection and
+// requeue. The policy lives in the store so the "find, fit, mutate,
+// persist" sequence stays under a single lock; this package is the seam
+// where richer policy (affinity, fairness across submitters) would go.
 package scheduler
 
 import (
@@ -26,7 +28,7 @@ func New(s *store.Store) *Scheduler {
 }
 
 // Lease hands the next eligible job to workerID, or (nil, false) if the
-// queue is empty.
+// queue is empty or nothing pending fits the worker's free capacity.
 func (sc *Scheduler) Lease(workerID string) (*types.Job, bool) {
 	return sc.store.LeaseNextJob(workerID)
 }

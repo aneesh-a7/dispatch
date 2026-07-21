@@ -34,6 +34,8 @@ func main() {
 		cmdStatus(c, args[1:])
 	case "list":
 		cmdList(c, args[1:])
+	case "cancel":
+		cmdCancel(c, args[1:])
 	default:
 		usage()
 		os.Exit(1)
@@ -44,8 +46,9 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `dispatchctl - control a dispatch cluster
 
 Usage:
-  dispatchctl submit [-priority N] [-retries N] <command> [args...]
+  dispatchctl submit [-priority N] [-retries N] [-cpu N] [-memory MB] <command> [args...]
   dispatchctl status <job-id>
+  dispatchctl cancel <job-id>
   dispatchctl list
 
 Flags (global):
@@ -57,6 +60,8 @@ func cmdSubmit(c *client.Client, args []string) {
 	fs := flag.NewFlagSet("submit", flag.ExitOnError)
 	priority := fs.Int("priority", 0, "higher runs first")
 	retries := fs.Int("retries", 0, "max retries on failure")
+	cpu := fs.Int("cpu", 0, "CPU units this job needs (0 means unconstrained)")
+	memory := fs.Int("memory", 0, "memory this job needs in MB (0 means unconstrained)")
 	fs.Parse(args)
 
 	rest := fs.Args()
@@ -70,9 +75,24 @@ func cmdSubmit(c *client.Client, args []string) {
 		Args:       rest[1:],
 		Priority:   *priority,
 		MaxRetries: *retries,
+		Resources:  types.Resources{CPU: *cpu, Memory: *memory},
 	})
 	fatalIf(err)
 	fmt.Printf("submitted job %s (status: %s)\n", job.ID, job.Status)
+}
+
+func cmdCancel(c *client.Client, args []string) {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: dispatchctl cancel <job-id>")
+		os.Exit(1)
+	}
+	job, err := c.CancelJob(args[0])
+	fatalIf(err)
+	if job.Status == types.JobCancelled {
+		fmt.Printf("cancelled job %s\n", job.ID)
+	} else {
+		fmt.Printf("cancel requested for job %s (currently %s); the worker will stop it shortly\n", job.ID, job.Status)
+	}
 }
 
 func cmdStatus(c *client.Client, args []string) {

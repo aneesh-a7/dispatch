@@ -138,6 +138,71 @@ func TestLeaseNextJob_NoDoubleDispatch(t *testing.T) {
 	}
 }
 
+// TestLeaseNextJob_ResourceBinPacking checks that a worker is only handed
+// jobs that fit its free capacity, and that finishing a job frees the
+// capacity again (Available is derived from running jobs, so releasing is
+// automatic).
+func TestLeaseNextJob_ResourceBinPacking(t *testing.T) {
+	s := newTestStore(t)
+	now := time.Now()
+
+	worker := &types.Worker{
+		ID: "w-cap", Address: "local", Status: types.WorkerAlive,
+		Capacity:     types.Resources{CPU: 4, Memory: 4096},
+		RegisteredAt: now, LastHeartbeat: now,
+	}
+	if err := s.RegisterWorker(worker); err != nil {
+		t.Fatalf("RegisterWorker() error = %v", err)
+	}
+
+	big := testJob("big", 10, now) // highest priority but needs the whole box
+	big.Resources = types.Resources{CPU: 4, Memory: 4096}
+	small := testJob("small", 0, now.Add(time.Second))
+	small.Resources = types.Resources{CPU: 1, Memory: 512}
+	for _, j := range []*types.Job{big, small} {
+		if err := s.CreateJob(j); err != nil {
+			t.Fatalf("CreateJob(%s) error = %v", j.ID, err)
+		}
+	}
+
+	// The big job leases first (highest priority, and it fits an empty worker).
+	leased, ok := s.LeaseNextJob("w-cap")
+	if !ok || leased.ID != "big" {
+		t.Fatalf("first lease = %+v, ok=%v; want big", leased, ok)
+	}
+	// Worker is now full, so the small job must not be leased even though
+	// it is the only thing left pending.
+	if leased, ok := s.LeaseNextJob("w-cap"); ok {
+		t.Fatalf("second lease = %+v, ok=%v; want no fit (worker full)", leased, ok)
+	}
+	if avail := mustWorker(t, s, "w-cap").Available; avail != (types.Resources{}) {
+		t.Fatalf("Available with big job running = %+v, want zero", avail)
+	}
+
+	// Finish the big job; its capacity should come back and the small one fits.
+	big.Status = types.JobSucceeded
+	big.WorkerID = "w-cap"
+	if err := s.UpdateJob(big); err != nil {
+		t.Fatalf("UpdateJob() error = %v", err)
+	}
+	if avail := mustWorker(t, s, "w-cap").Available; avail != (types.Resources{CPU: 4, Memory: 4096}) {
+		t.Fatalf("Available after big job done = %+v, want full capacity", avail)
+	}
+	leased, ok = s.LeaseNextJob("w-cap")
+	if !ok || leased.ID != "small" {
+		t.Fatalf("third lease = %+v, ok=%v; want small", leased, ok)
+	}
+}
+
+func mustWorker(t *testing.T, s *Store, id string) *types.Worker {
+	t.Helper()
+	w, ok := s.GetWorker(id)
+	if !ok {
+		t.Fatalf("GetWorker(%s) ok = false, want true", id)
+	}
+	return w
+}
+
 func TestReplay_RecoversStateAfterReopen(t *testing.T) {
 	dir := t.TempDir()
 

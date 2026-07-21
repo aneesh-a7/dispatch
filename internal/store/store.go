@@ -204,19 +204,49 @@ func (s *Store) ListJobs() []*types.Job {
 	return out
 }
 
-// LeaseNextJob atomically finds the highest-priority, oldest pending job,
-// marks it running and assigned to workerID, persists that transition,
-// and returns it. Doing the "find + mutate + persist" sequence under a
-// single lock is what prevents two workers from racing to lease the same
-// job: the classic double-dispatch bug in naive queue implementations.
+// usedByWorkerLocked sums the resources of jobs currently running on a
+// worker. Available capacity is derived from this rather than tracked
+// separately: the running jobs are already durable in the WAL, so there
+// is nothing extra to persist and no counter that can drift or be
+// double-released. Callers must hold s.mu.
+func (s *Store) usedByWorkerLocked(workerID string) types.Resources {
+	var used types.Resources
+	for _, j := range s.jobs {
+		if j.Status == types.JobRunning && j.WorkerID == workerID {
+			used = used.Plus(j.Resources)
+		}
+	}
+	return used
+}
+
+// LeaseNextJob atomically finds the highest-priority, oldest pending job
+// that fits the worker's free capacity, marks it running and assigned to
+// workerID, persists that transition, and returns it. Doing the "find +
+// mutate + persist" sequence under a single lock is what prevents two
+// workers from racing to lease the same job: the classic double-dispatch
+// bug in naive queue implementations.
+//
+// Leasing is bin-packing, not pure priority/FIFO: a job is only handed to
+// a worker with enough free CPU and memory for it. If the worker is not
+// known to the store (which only happens in direct unit tests, since the
+// API checks registration first), the capacity filter is skipped.
 func (s *Store) LeaseNextJob(workerID string) (*types.Job, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	worker, workerKnown := s.workers[workerID]
+	var avail types.Resources
+	if workerKnown {
+		avail = worker.Capacity.Minus(s.usedByWorkerLocked(workerID))
+	}
 
 	var best *types.Job
 	for _, j := range s.jobs {
 		if j.Status != types.JobPending {
 			continue
+		}
+		if workerKnown && !j.Resources.FitsWithin(avail) {
+			continue // does not fit this worker right now; leave it queued
 		}
 		if best == nil ||
 			j.Priority > best.Priority ||
@@ -271,13 +301,15 @@ func (s *Store) Heartbeat(id string) (*types.Worker, bool) {
 	return &cp, true
 }
 
-// ListWorkers returns copies of all known workers.
+// ListWorkers returns copies of all known workers, each with Available
+// filled in from the resources its running jobs consume.
 func (s *Store) ListWorkers() []*types.Worker {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]*types.Worker, 0, len(s.workers))
 	for _, w := range s.workers {
 		cp := *w
+		cp.Available = w.Capacity.Minus(s.usedByWorkerLocked(w.ID))
 		out = append(out, &cp)
 	}
 	sort.Slice(out, func(i, k int) bool { return out[i].RegisteredAt.Before(out[k].RegisteredAt) })
@@ -292,7 +324,8 @@ func (s *Store) UpdateWorker(w *types.Worker) error {
 	return s.append(record{Type: recWorkerUpsert, Worker: w})
 }
 
-// GetWorker returns a copy of a single worker.
+// GetWorker returns a copy of a single worker, with Available derived from
+// the resources its running jobs consume.
 func (s *Store) GetWorker(id string) (*types.Worker, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -301,5 +334,6 @@ func (s *Store) GetWorker(id string) (*types.Worker, bool) {
 		return nil, false
 	}
 	cp := *w
+	cp.Available = w.Capacity.Minus(s.usedByWorkerLocked(id))
 	return &cp, true
 }
