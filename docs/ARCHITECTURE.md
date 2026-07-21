@@ -88,27 +88,62 @@ code) or inferred by the reaper (worker died mid-execution). Both paths
 share the same state machine so there's exactly one place
 (`types.JobStatus` transitions) that defines what "failed" means.
 
-## What's deliberately out of scope (week 1)
+### Resource-aware scheduling (bin-packing)
 
-- **Resource-aware scheduling.** Leasing today is priority-then-FIFO; it
-  does not consider CPU/memory on the worker vs. what the job needs.
-  `Worker` and `Job` types have room to grow a `Resources` field; the
-  scheduler's `Lease` method is the seam where bin-packing logic would
-  go without touching the store or API layers.
-- **Job cancellation.** No `DELETE /v1/jobs/{id}` yet: once leased, a
-  job runs to completion or times out.
+Leasing is not pure priority/FIFO. A job carries a `Resources` request
+(CPU units and memory) and a worker carries a `Capacity`. `LeaseNextJob`
+hands a worker the highest-priority, oldest pending job that still fits
+its free capacity, and skips jobs that do not. A zero request fits
+anywhere and consumes nothing, so resource-awareness is opt-in and older
+untagged jobs behave exactly as before.
+
+The interesting decision is that a worker's *available* capacity is not
+stored. It is derived on read as `Capacity` minus the resources of the
+jobs currently running on it. The running jobs are already durable in the
+WAL, so there is nothing extra to persist, no separate counter that can
+drift, and no explicit "release on completion" step to forget: a job
+leaving the running state frees its capacity automatically. The cost is
+recomputing a small sum on each lease and each worker read, which at this
+scale is free.
+
+### Job cancellation
+
+`DELETE /v1/jobs/{id}` stops a job. A pending job is cancelled outright,
+since no worker holds it. A running job is a different problem: the
+subprocess lives on the worker, and the control plane never dials
+workers (see pull-based leasing above), so it cannot reach in and kill
+it. Instead it sets a `CancelRequested` flag on the job. The worker,
+while running a job, polls its own job record and cancels the
+subprocess's context the moment it sees the flag, then reports back as
+`cancelled`. A cancellation is terminal and beats any remaining retry
+budget: the user asked it to stop, so it stays stopped.
+
+This reuses the existing pull model rather than adding a push channel. It
+costs a little latency (bounded by the worker's cancel-poll interval),
+the same trade already made for leasing.
+
+### Metrics
+
+`/metrics` is plain Prometheus text, no client library. Beyond status
+counts it exposes lease latency (queue wait) and execution duration as a
+running `_sum` plus `_count`, the shape Prometheus histograms use, so a
+scrape can derive an average without the endpoint holding any state
+between calls. Everything is computed from the timestamps already on each
+job. `cmd/loadtest` uses the same timestamps to report throughput and
+lease/exec percentiles for a burst of jobs.
+
+## What's deliberately out of scope
+
 - **Sandboxed execution.** Workers run jobs as plain subprocesses via
   `os/exec`. No namespace/cgroup isolation, no container runtime. A
   malicious or buggy job has full access to the worker's environment.
   This is the single most important thing to fix before running
-  anything untrusted, and is the natural "phase 2" of this project.
+  anything untrusted, and is the natural next phase of this project.
 - **Log compaction.** The WAL grows forever; there's no snapshotting or
   truncation. For a real deployment this needs a periodic "rewrite the
   log to just current state" pass, the same idea Postgres calls a
   checkpoint.
 - **Auth.** The HTTP API has no authentication. Fine for a local/trusted
-  network; not fine for anything exposed beyond that.
-- **Structured metrics beyond bare counters.** `/metrics` reports job and
-  worker counts. It does not yet track lease latency, execution
-  duration, or retry-rate histograms: the things you'd actually want
-  when debugging *why* the system is slow, not just that it's busy.
+  network; not fine for anything exposed beyond that. The dashboard's
+  "add worker" endpoint (which opens a local terminal) leans on the same
+  assumption and should never be exposed on a shared control plane.

@@ -60,23 +60,26 @@ go run ./cmd/worker
 # Terminal 3: submit work
 go run ./cmd/dispatchctl submit -- echo "hello dispatch"
 go run ./cmd/dispatchctl submit -priority 5 -retries 2 -- python3 my_script.py
+go run ./cmd/dispatchctl submit -cpu 2 -memory 1024 -- ./heavy_job
 
 go run ./cmd/dispatchctl list
 go run ./cmd/dispatchctl status <job-id>
+go run ./cmd/dispatchctl cancel <job-id>
 ```
 
 Or open **http://localhost:8080** in a browser once the control plane is
-running: a live dashboard shows jobs and workers updating in real time,
-with a form to submit new jobs without touching the CLI. The cluster view
-draws each worker as a small sprite and animates jobs moving from the
-queue onto a worker and then finishing (green) or failing (red), so you
-can watch scheduling happen. An "Add worker" button opens a terminal on
-the same machine with a worker ready to run, which is handy for watching
-work spread across a few of them.
+running. The dashboard is built around a live cluster view: each worker
+is a small animated sprite that reacts as work happens (it grabs a job
+when it starts, cheers on success, shudders on failure), jobs slide from
+the queue onto a worker, and a bar under each sprite shows how much of
+its capacity is in use. A stats strip up top tracks running, queued,
+throughput, and average queue wait. You can submit jobs from a form,
+click any queued or running job to cancel it, and hit "Add worker" to
+open a terminal on the same machine with a worker ready to run.
 
-Multiple workers can be started against the same control plane. Jobs
-are leased to whichever worker polls first, one at a time, with no
-double-dispatch (see `Store.LeaseNextJob`).
+Multiple workers can be started against the same control plane. Jobs are
+leased to whichever worker has free capacity, one at a time per worker,
+with no double-dispatch (see `Store.LeaseNextJob`).
 
 ## What happens when a worker dies mid-job
 
@@ -94,11 +97,36 @@ with every job and worker exactly where it left off. Nothing is lost
 except whatever hadn't been fsync'd yet (which, by construction, is
 nothing that was ever acknowledged to a caller).
 
+## Resource-aware scheduling and cancellation
+
+Jobs can declare a CPU/memory request and workers advertise a capacity
+(`-cpu`, `-memory`). Leasing is bin-packing: a job only goes to a worker
+with enough room for it, and a worker's free capacity is tracked as its
+running jobs consume and release it. A job left at the default (zero)
+fits anywhere and consumes nothing, so this stays opt-in.
+
+Cancel a job with `dispatchctl cancel <job-id>`, the dashboard, or
+`DELETE /v1/jobs/{id}`. A pending job is dropped immediately; a running
+job is signalled to its worker, which kills the subprocess and reports it
+as cancelled. Cancelling beats any remaining retries.
+
+## Metrics and load testing
+
+`/metrics` serves plain Prometheus text: job status counts, retry and
+cancellation totals, worker capacity, and lease-latency and
+execution-duration sums/counts (so a scrape can derive averages). To get
+throughput numbers, run the bundled load test against a live cluster:
+
+```bash
+go run ./cmd/loadtest -n 500          # submits 500 jobs, reports jobs/sec + p50/p95/p99
+```
+
 ## CLI reference
 
 ```
-dispatchctl submit [-priority N] [-retries N] <command> [args...]
+dispatchctl submit [-priority N] [-retries N] [-cpu N] [-memory MB] <command> [args...]
 dispatchctl status <job-id>
+dispatchctl cancel <job-id>
 dispatchctl list
 ```
 
@@ -109,10 +137,11 @@ cmd/
   controlplane/   entrypoint: HTTP server, store, scheduler, reaper
   worker/         entrypoint: registration, heartbeats, polling, execution
   dispatchctl/    entrypoint: CLI
+  loadtest/       entrypoint: throughput/latency load generator
 internal/
-  types/          shared domain types (Job, Worker)
+  types/          shared domain types (Job, Worker, Resources)
   store/          write-ahead log + in-memory index
-  scheduler/      job leasing + dead-worker reaper
+  scheduler/      resource-aware leasing + dead-worker reaper
   api/            HTTP handlers
   client/         typed HTTP client (shared by worker + CLI)
   idgen/          stdlib-only sortable ID generation
@@ -123,9 +152,10 @@ docs/
 
 ## Status
 
-This is the week-1 skeleton: correctness and durability first. Not yet
-built: resource-aware scheduling (bin-packing by CPU/mem), job
-cancellation, sandboxed execution, and a real metrics/observability
-story beyond the bare `/metrics` counters. See
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for what's next and why it
-was cut from this pass.
+Durable control plane, pull-based workers, priority + resource-aware
+(bin-packing) leasing, retries, dead-worker reaping, job cancellation,
+Prometheus metrics, a load-test tool, and a live sprite dashboard are all
+built and manually tested end to end. Still deliberately out of scope:
+sandboxed execution, WAL compaction, auth, and a multi-node (HA) control
+plane. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the reasoning
+on each.

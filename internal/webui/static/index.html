@@ -8,12 +8,34 @@
 </head>
 <body>
   <header>
-    <h1>dispatch</h1>
-    <div id="conn-status" class="conn-status">connecting&hellip;</div>
+    <div class="brand">
+      <div class="logo-sprite" aria-hidden="true">
+        <div class="sprite mini">
+          <div class="body"><span class="eye left"></span><span class="eye right"></span></div>
+        </div>
+      </div>
+      <div class="brand-text">
+        <h1>dispatch</h1>
+        <div class="tagline">distributed job scheduler &middot; by <strong>Aneesh Amirineni</strong></div>
+      </div>
+    </div>
+    <div id="conn-status" class="conn-status"><span class="dot"></span> connecting&hellip;</div>
   </header>
 
   <main>
-    <section class="panel">
+    <!-- Live stats strip -->
+    <section class="stats" id="stats">
+      <div class="stat" id="stat-running"><div class="stat-value">0</div><div class="stat-label">running</div></div>
+      <div class="stat" id="stat-queued"><div class="stat-value">0</div><div class="stat-label">queued</div></div>
+      <div class="stat" id="stat-workers"><div class="stat-value">0</div><div class="stat-label">workers alive</div></div>
+      <div class="stat" id="stat-throughput"><div class="stat-value">0</div><div class="stat-label">jobs / min</div></div>
+      <div class="stat" id="stat-lease"><div class="stat-value">-</div><div class="stat-label">avg queue wait</div></div>
+      <div class="stat" id="stat-done"><div class="stat-value">0</div><div class="stat-label">succeeded</div></div>
+      <div class="stat" id="stat-failed"><div class="stat-value">0</div><div class="stat-label">failed</div></div>
+    </section>
+
+    <!-- Hero: the cluster stage -->
+    <section class="panel stage-panel">
       <div class="panel-head">
         <h2>Cluster <span id="cluster-hint" class="count"></span></h2>
         <button id="add-worker" type="button" class="ghost">+ Add worker</button>
@@ -27,54 +49,82 @@
         </div>
         <div id="chips-overlay" class="chips-overlay"></div>
       </div>
+      <div class="stage-legend">
+        <span><i class="swatch pending"></i> queued</span>
+        <span><i class="swatch running"></i> running</span>
+        <span><i class="swatch done"></i> succeeded</span>
+        <span><i class="swatch failed"></i> failed</span>
+        <span><i class="swatch cancelled"></i> cancelled</span>
+        <span class="legend-tip">tip: click a job to cancel it</span>
+      </div>
     </section>
 
-    <section class="panel">
+    <!-- Compact submit bar -->
+    <section class="panel submit-panel">
       <h2>Submit a job</h2>
       <form id="submit-form">
-        <div class="field">
+        <div class="field grow">
           <label for="command">Command</label>
           <input id="command" name="command" type="text" placeholder="echo" required />
         </div>
-        <div class="field">
+        <div class="field grow">
           <label for="args">Args</label>
           <input id="args" name="args" type="text" placeholder="hello dispatch" />
-          <span class="hint">space-separated</span>
         </div>
         <div class="field small">
           <label for="priority">Priority</label>
           <input id="priority" name="priority" type="number" value="0" />
         </div>
         <div class="field small">
-          <label for="retries">Max retries</label>
+          <label for="retries">Retries</label>
           <input id="retries" name="retries" type="number" value="0" min="0" />
+        </div>
+        <div class="field small">
+          <label for="cpu">CPU</label>
+          <input id="cpu" name="cpu" type="number" value="0" min="0" />
+        </div>
+        <div class="field small">
+          <label for="memory">Mem MB</label>
+          <input id="memory" name="memory" type="number" value="0" min="0" />
         </div>
         <button type="submit">Submit</button>
         <span id="submit-feedback" class="feedback"></span>
       </form>
     </section>
 
-    <section class="panel">
-      <h2>Workers <span id="worker-count" class="count"></span></h2>
-      <table id="workers-table">
-        <thead>
-          <tr><th>ID</th><th>Address</th><th>Status</th><th>Last heartbeat</th></tr>
-        </thead>
-        <tbody></tbody>
-      </table>
-      <p class="empty" id="workers-empty">No workers registered yet.</p>
-    </section>
+    <!-- Secondary: detail tables -->
+    <div class="tables">
+      <section class="panel">
+        <h2>Jobs <span id="job-count" class="count"></span></h2>
+        <div class="table-wrap">
+          <table id="jobs-table">
+            <thead>
+              <tr><th>ID</th><th>Status</th><th>Command</th><th>Res</th><th>Pri</th><th>Retries</th><th>Worker</th><th>Updated</th><th></th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p class="empty" id="jobs-empty">No jobs submitted yet.</p>
+      </section>
 
-    <section class="panel">
-      <h2>Jobs <span id="job-count" class="count"></span></h2>
-      <table id="jobs-table">
-        <thead>
-          <tr><th>ID</th><th>Status</th><th>Command</th><th>Priority</th><th>Retries</th><th>Worker</th><th>Updated</th></tr>
-        </thead>
-        <tbody></tbody>
-      </table>
-      <p class="empty" id="jobs-empty">No jobs submitted yet.</p>
-    </section>
+      <section class="panel">
+        <h2>Workers <span id="worker-count" class="count"></span></h2>
+        <div class="table-wrap">
+          <table id="workers-table">
+            <thead>
+              <tr><th>ID</th><th>Status</th><th>Capacity (used / total)</th><th>Heartbeat</th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p class="empty" id="workers-empty">No workers registered yet.</p>
+      </section>
+    </div>
+
+    <footer class="site-footer">
+      <span>dispatch</span> &middot; built by Aneesh Amirineni &middot;
+      <a href="https://github.com/aneesh-a7/dispatch" target="_blank" rel="noopener noreferrer">source on GitHub</a>
+    </footer>
   </main>
 
   <script src="/app.js"></script>

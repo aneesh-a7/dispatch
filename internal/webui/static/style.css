@@ -1,253 +1,239 @@
 :root {
-  --bg: #0d1117;
-  --panel: #161b22;
-  --border: #30363d;
-  --text: #c9d1d9;
-  --muted: #8b949e;
-  --accent: #58a6ff;
+  --bg: #0b0e14;
+  --bg-2: #0f131b;
+  --panel: #141a24;
+  --panel-2: #1a212d;
+  --border: #262e3b;
+  --border-soft: #1f2733;
+  --text: #d7dee8;
+  --muted: #7d8899;
 
-  --pending: #8b949e;
+  --accent: #58a6ff;
+  --claude: #d97757;
+  --claude-lite: #e8916f;
+
+  --pending: #8b97a8;
   --running: #58a6ff;
   --succeeded: #3fb950;
   --failed: #f85149;
+  --cancelled: #d9a441;
   --alive: #3fb950;
   --dead: #f85149;
-
-  --claude: #d97757; /* warm clay, the worker sprite's body color */
 }
 
 * { box-sizing: border-box; }
 
 body {
   margin: 0;
-  background: var(--bg);
+  background:
+    radial-gradient(1200px 500px at 80% -10%, rgba(217, 119, 87, 0.08), transparent 60%),
+    radial-gradient(1000px 500px at 0% 0%, rgba(88, 166, 255, 0.06), transparent 55%),
+    var(--bg);
   color: var(--text);
   font-family: ui-monospace, "SF Mono", "Cascadia Code", Consolas, monospace;
   font-size: 14px;
+  min-height: 100vh;
 }
+
+/* --- header ------------------------------------------------------------ */
 
 header {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
-  padding: 16px 24px;
+  padding: 16px 28px;
   border-bottom: 1px solid var(--border);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent);
 }
 
-header h1 {
+.brand { display: flex; align-items: center; gap: 14px; }
+
+.brand h1 {
   margin: 0;
-  font-size: 18px;
+  font-size: 20px;
   letter-spacing: 0.02em;
+}
+
+.tagline { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.tagline strong { color: var(--claude-lite); font-weight: 600; }
+
+.logo-sprite {
+  width: 40px; height: 40px;
+  display: grid; place-items: center;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
 }
 
 .conn-status {
   font-size: 12px;
   color: var(--muted);
+  display: flex; align-items: center; gap: 7px;
+}
+.conn-status .dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--muted);
 }
 .conn-status.ok { color: var(--succeeded); }
+.conn-status.ok .dot { background: var(--succeeded); animation: pulse 2s ease-in-out infinite; }
 .conn-status.error { color: var(--failed); }
+.conn-status.error .dot { background: var(--failed); }
+
+@keyframes pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(63, 185, 80, 0.5); }
+  50% { box-shadow: 0 0 0 5px rgba(63, 185, 80, 0); }
+}
+
+/* --- layout ------------------------------------------------------------ */
 
 main {
-  max-width: 1000px;
+  max-width: 1120px;
   margin: 0 auto;
-  padding: 24px;
+  padding: 22px;
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  gap: 20px;
 }
 
 .panel {
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 10px;
   padding: 16px 20px;
 }
 
 .panel h2 {
   margin: 0 0 12px 0;
-  font-size: 14px;
+  font-size: 13px;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.06em;
   color: var(--muted);
 }
 
-.count {
-  font-weight: normal;
+.count { font-weight: normal; color: var(--muted); }
+
+.panel-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.panel-head h2 { margin: 0; }
+
+/* --- stats strip ------------------------------------------------------- */
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 12px;
+}
+
+.stat {
+  background: linear-gradient(180deg, var(--panel-2), var(--panel));
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  min-width: 0;
+}
+.stat-value {
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1.1;
+  transition: color 0.2s ease;
+}
+.stat-label {
+  font-size: 10.5px;
   color: var(--muted);
-}
-
-table {
-  width: 100%;
-  border-collapse: collapse;
-}
-
-th, td {
-  text-align: left;
-  padding: 6px 8px;
-  border-bottom: 1px solid var(--border);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-top: 4px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
+#stat-running .stat-value { color: var(--running); }
+#stat-queued .stat-value { color: var(--pending); }
+#stat-workers .stat-value { color: var(--claude-lite); }
+#stat-throughput .stat-value { color: var(--accent); }
+#stat-done .stat-value { color: var(--succeeded); }
+#stat-failed .stat-value { color: var(--failed); }
 
-th {
-  color: var(--muted);
-  font-weight: normal;
-  font-size: 12px;
-  text-transform: uppercase;
+/* the number briefly bumps when it changes, for a reactive feel */
+.stat-value.bump { animation: bump 0.4s ease; }
+@keyframes bump {
+  0% { transform: scale(1); }
+  35% { transform: scale(1.25); }
+  100% { transform: scale(1); }
 }
 
-tbody tr:last-child td { border-bottom: none; }
+/* --- cluster stage ----------------------------------------------------- */
 
-.empty {
-  color: var(--muted);
-  font-size: 13px;
-  margin: 8px 0 0 0;
-}
-
-.badge {
-  display: inline-block;
-  padding: 2px 8px;
-  border-radius: 10px;
-  font-size: 12px;
-  font-weight: 600;
-}
-.badge.pending    { color: var(--pending);   background: color-mix(in srgb, var(--pending) 15%, transparent); }
-.badge.running    { color: var(--running);   background: color-mix(in srgb, var(--running) 15%, transparent); }
-.badge.succeeded  { color: var(--succeeded); background: color-mix(in srgb, var(--succeeded) 15%, transparent); }
-.badge.failed     { color: var(--failed);    background: color-mix(in srgb, var(--failed) 15%, transparent); }
-.badge.alive      { color: var(--alive);     background: color-mix(in srgb, var(--alive) 15%, transparent); }
-.badge.dead       { color: var(--dead);      background: color-mix(in srgb, var(--dead) 15%, transparent); }
-
-form#submit-form {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: end;
-  gap: 12px;
-}
-
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  flex: 1 1 160px;
-}
-.field.small { flex: 0 0 90px; }
-
-.field label {
-  font-size: 12px;
-  color: var(--muted);
-}
-
-.hint {
-  font-size: 11px;
-  color: var(--muted);
-}
-
-input {
-  background: var(--bg);
-  border: 1px solid var(--border);
-  color: var(--text);
-  border-radius: 4px;
-  padding: 6px 8px;
-  font-family: inherit;
-  font-size: 13px;
-}
-input:focus {
-  outline: none;
-  border-color: var(--accent);
-}
-
-button {
-  background: var(--accent);
-  color: #0d1117;
-  border: none;
-  border-radius: 4px;
-  padding: 7px 16px;
-  font-family: inherit;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-}
-button:hover { opacity: 0.9; }
-button:disabled { opacity: 0.5; cursor: default; }
-
-.feedback {
-  font-size: 12px;
-  color: var(--muted);
-}
-.feedback.ok { color: var(--succeeded); }
-.feedback.error { color: var(--failed); }
-
-/* --- cluster scene ----------------------------------------------------- */
-
-.panel-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 12px;
-}
-.panel-head h2 { margin: 0; }
+.stage-panel { padding-bottom: 12px; }
 
 button.ghost {
   background: transparent;
-  color: var(--claude);
+  color: var(--claude-lite);
   border: 1px solid color-mix(in srgb, var(--claude) 55%, transparent);
+  border-radius: 6px;
+  padding: 7px 14px;
+  font-family: inherit; font-size: 13px; font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.1s ease;
 }
-button.ghost:hover { background: color-mix(in srgb, var(--claude) 12%, transparent); opacity: 1; }
+button.ghost:hover { background: color-mix(in srgb, var(--claude) 14%, transparent); }
+button.ghost:active { transform: translateY(1px); }
+button.ghost:disabled { opacity: 0.5; cursor: default; }
 
 .stage {
   position: relative;
-  height: 240px;
+  height: 300px;
   overflow: hidden;
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.015), transparent 30%),
+    repeating-linear-gradient(90deg, transparent, transparent 39px, rgba(255, 255, 255, 0.02) 39px, rgba(255, 255, 255, 0.02) 40px),
+    var(--bg-2);
 }
 
 .queue-box {
   position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 150px;
+  left: 0; top: 0; bottom: 0;
+  width: 168px;
   border-right: 1px dashed var(--border);
+  background: linear-gradient(180deg, rgba(139, 151, 168, 0.05), transparent);
 }
 
 .worker-row {
   position: absolute;
-  left: 170px;
-  right: 8px;
-  top: 24px;
-  bottom: 20px;
+  left: 188px; right: 12px; top: 30px; bottom: 16px;
   display: flex;
   flex-wrap: wrap;
   align-content: flex-end;
-  gap: 28px 34px;
+  gap: 26px 34px;
 }
 
 .lane-label {
   position: absolute;
-  top: 6px;
-  left: 8px;
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+  top: 8px; left: 10px;
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em;
   color: var(--muted);
 }
 
-.stage-empty {
-  color: var(--muted);
-  font-size: 13px;
-  align-self: center;
-  max-width: 220px;
-}
-.stage-empty strong { color: var(--claude); font-weight: 600; }
+.stage-empty { color: var(--muted); font-size: 13px; align-self: center; max-width: 240px; }
+.stage-empty strong { color: var(--claude-lite); font-weight: 600; }
 
-/* Chips fly over the whole stage, so their coordinates share one origin. */
-.chips-overlay {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  z-index: 5;
+.chips-overlay { position: absolute; inset: 0; z-index: 6; }
+
+.stage-legend {
+  display: flex; flex-wrap: wrap; gap: 14px;
+  margin-top: 12px; padding-top: 10px;
+  border-top: 1px solid var(--border-soft);
+  font-size: 11px; color: var(--muted);
+  align-items: center;
 }
+.stage-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.swatch { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+.swatch.pending { background: var(--pending); }
+.swatch.running { background: var(--running); }
+.swatch.done { background: var(--succeeded); }
+.swatch.failed { background: var(--failed); }
+.swatch.cancelled { background: var(--cancelled); }
+.legend-tip { margin-left: auto; font-style: italic; opacity: 0.8; }
 
 /* --- worker sprite ----------------------------------------------------- */
 
@@ -255,158 +241,319 @@ button.ghost:hover { background: color-mix(in srgb, var(--claude) 12%, transpare
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
-  width: 52px;
+  gap: 8px;
+  width: 72px;
 }
 
 .sprite {
   position: relative;
-  width: 44px;
-  height: 46px;
+  width: 60px;
+  height: 58px;
 }
 
-/* Three discrete animation frames: steps(1) holds each keyframe rather
-   than tweening between them, which reads as hand-drawn sprite frames
-   instead of a smooth slide. */
-.sprite-body {
+/* the body: three-frame idle bob (steps holds each frame like a drawn cel) */
+.sprite .body {
   position: absolute;
-  left: 2px;
-  right: 2px;
-  top: 0;
-  height: 40px;
-  background: var(--claude);
-  border-radius: 13px 13px 15px 15px;
-  box-shadow: inset 0 -6px 0 rgba(0, 0, 0, 0.14);
-  animation: bob 0.9s steps(1, end) infinite;
+  left: 4px; right: 4px; top: 0;
+  height: 50px;
+  background: linear-gradient(180deg, var(--claude-lite), var(--claude));
+  border-radius: 16px 16px 18px 18px;
+  box-shadow: inset 0 -7px 0 rgba(0, 0, 0, 0.15), 0 4px 10px rgba(0, 0, 0, 0.3);
+  animation: idleBob 0.9s steps(1, end) infinite;
 }
 
 .eye {
   position: absolute;
-  top: 15px;
-  width: 6px;
-  height: 8px;
-  background: #201400;
-  border-radius: 3px;
-  animation: blink 0.9s steps(1, end) infinite;
+  top: 18px;
+  width: 7px; height: 10px;
+  background: #241500;
+  border-radius: 4px;
+  animation: blink 2.4s steps(1, end) infinite;
 }
-.eye.left { left: 12px; }
-.eye.right { right: 12px; }
+.eye.left { left: 15px; }
+.eye.right { right: 15px; }
 
-.sprite-shadow {
-  position: absolute;
-  bottom: -5px;
-  left: 8px;
-  right: 8px;
-  height: 5px;
-  background: rgba(0, 0, 0, 0.4);
-  border-radius: 50%;
-  filter: blur(1px);
-  animation: shadow 0.9s steps(1, end) infinite;
-}
-
-.worker-label {
-  font-size: 10px;
-  color: var(--muted);
-}
-
-@keyframes bob {
-  0%   { transform: translateY(0); }
-  33%  { transform: translateY(-3px); }
-  66%  { transform: translateY(-1px); }
-}
-@keyframes shadow {
-  0%   { transform: scaleX(1);   opacity: 0.4; }
-  33%  { transform: scaleX(0.82); opacity: 0.24; }
-  66%  { transform: scaleX(0.92); opacity: 0.32; }
-}
-@keyframes blink {
-  0%   { transform: scaleY(1); }
-  33%  { transform: scaleY(1); }
-  66%  { transform: scaleY(0.15); }
-}
-
-/* Busy worker: a spinning ring and a quicker bob. */
-.worker.working .sprite-body,
-.worker.working .eye,
-.worker.working .sprite-shadow {
-  animation-duration: 0.45s;
-}
-.worker.working .sprite::after {
+/* a little shadow that squashes in time with the bob */
+.sprite::after {
   content: "";
   position: absolute;
-  inset: -6px;
-  border-radius: 16px;
-  background: conic-gradient(from 0deg, transparent, var(--claude));
-  -webkit-mask: radial-gradient(circle, transparent 58%, #000 60%);
-  mask: radial-gradient(circle, transparent 58%, #000 60%);
-  animation: spin 0.8s linear infinite;
-  opacity: 0.85;
+  bottom: -6px; left: 10px; right: 10px;
+  height: 6px;
+  background: rgba(0, 0, 0, 0.45);
+  border-radius: 50%;
+  filter: blur(1.5px);
+  animation: shadowSquash 0.9s steps(1, end) infinite;
 }
-@keyframes spin { to { transform: rotate(360deg); } }
 
-/* Dead worker: sprite topples and stops moving. */
-.worker.dead .sprite-body {
-  background: var(--muted);
-  animation: none;
-  transform: rotate(9deg) translateY(3px);
+/* working ring, only rendered while busy */
+.sprite::before {
+  content: "";
+  position: absolute;
+  inset: -7px -7px 1px -7px;
+  border-radius: 20px;
+  background: conic-gradient(from 0deg, transparent, var(--claude-lite));
+  -webkit-mask: radial-gradient(circle at 50% 45%, transparent 60%, #000 62%);
+  mask: radial-gradient(circle at 50% 45%, transparent 60%, #000 62%);
+  opacity: 0;
+  transition: opacity 0.2s ease;
 }
-.worker.dead .eye { animation: none; transform: scaleY(0.15); }
-.worker.dead .sprite-shadow { animation: none; opacity: 0.2; }
-.worker.dead .worker-label { color: var(--dead); }
+
+.worker-name { font-size: 10.5px; color: var(--muted); letter-spacing: 0.02em; }
+
+.cap-bars { display: flex; flex-direction: column; gap: 3px; width: 60px; }
+.cap {
+  height: 4px; border-radius: 3px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+.cap-fill {
+  display: block; height: 100%; width: 0%;
+  border-radius: 3px;
+  transition: width 0.5s cubic-bezier(0.2, 0.7, 0.2, 1), background 0.3s ease;
+}
+.cap.cpu .cap-fill { background: var(--accent); }
+.cap.mem .cap-fill { background: var(--claude-lite); }
+.cap-fill.full { background: var(--failed); }
+
+@keyframes idleBob {
+  0%   { transform: translateY(0); }
+  33%  { transform: translateY(-4px); }
+  66%  { transform: translateY(-1px); }
+}
+@keyframes shadowSquash {
+  0%   { transform: scaleX(1);    opacity: 0.45; }
+  33%  { transform: scaleX(0.8);  opacity: 0.26; }
+  66%  { transform: scaleX(0.92); opacity: 0.34; }
+}
+@keyframes blink {
+  0%, 92% { transform: scaleY(1); }
+  96% { transform: scaleY(0.1); }
+  100% { transform: scaleY(1); }
+}
+
+/* --- worker states ----------------------------------------------------- */
+
+.worker.working .sprite::before { opacity: 0.9; animation: ringSpin 0.8s linear infinite; }
+.worker.working .body { animation-duration: 0.45s; }
+.worker.working .sprite::after { animation-duration: 0.45s; }
+.worker.working .eye { animation: none; height: 4px; top: 21px; } /* focused squint */
+@keyframes ringSpin { to { transform: rotate(360deg); } }
+
+.worker.dead .body { background: linear-gradient(180deg, #566072, #3a4150); animation: none; transform: rotate(10deg) translateY(4px); }
+.worker.dead .sprite::before { opacity: 0; }
+.worker.dead .sprite::after { animation: none; opacity: 0.2; }
+.worker.dead .eye { animation: none; transform: rotate(10deg); height: 3px; top: 22px; }
+.worker.dead .worker-name { color: var(--dead); }
+.worker.dead .cap-fill { background: #566072 !important; }
+
+/* --- one-shot sprite reactions (added by JS, removed after the animation) */
+
+.worker.react-grab .body { animation: reactGrab 0.5s ease; }
+@keyframes reactGrab {
+  0% { transform: translateY(0) scaleY(1); }
+  30% { transform: translateY(6px) scaleY(0.82) scaleX(1.1); }
+  60% { transform: translateY(-3px) scaleY(1.05); }
+  100% { transform: translateY(0) scaleY(1); }
+}
+
+.worker.react-cheer .body { animation: reactCheer 0.6s ease; }
+@keyframes reactCheer {
+  0% { transform: translateY(0) rotate(0); }
+  30% { transform: translateY(-12px) rotate(-6deg); }
+  55% { transform: translateY(-14px) rotate(6deg); }
+  100% { transform: translateY(0) rotate(0); }
+}
+
+.worker.react-oops .body { animation: reactOops 0.5s ease; }
+@keyframes reactOops {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-6px) rotate(-4deg); }
+  40% { transform: translateX(6px) rotate(4deg); }
+  60% { transform: translateX(-4px); }
+  80% { transform: translateX(4px); }
+}
+
+.worker.react-drop .body { animation: reactDrop 0.5s ease; }
+@keyframes reactDrop {
+  0% { transform: scaleY(1); }
+  40% { transform: scaleY(0.7) translateY(6px); }
+  100% { transform: scaleY(1); }
+}
+
+/* colored flash overlay for reactions, drawn as a tinted glow behind body */
+.worker .flash {
+  position: absolute; inset: -10px;
+  border-radius: 22px;
+  opacity: 0;
+  pointer-events: none;
+}
+.worker.react-cheer .flash { animation: flash 0.6s ease; background: radial-gradient(circle, var(--succeeded), transparent 70%); }
+.worker.react-oops .flash { animation: flash 0.6s ease; background: radial-gradient(circle, var(--failed), transparent 70%); }
+.worker.react-drop .flash { animation: flash 0.6s ease; background: radial-gradient(circle, var(--cancelled), transparent 70%); }
+@keyframes flash {
+  0% { opacity: 0; }
+  25% { opacity: 0.5; }
+  100% { opacity: 0; }
+}
 
 /* --- job chips --------------------------------------------------------- */
 
 .chip {
-  position: absolute;
-  top: 0;
-  left: 0;
-  max-width: 122px;
-  padding: 3px 8px;
-  border-radius: 6px;
+  position: absolute; top: 0; left: 0;
+  max-width: 130px;
+  padding: 4px 9px;
+  border-radius: 7px;
   font-size: 11px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   background: color-mix(in srgb, var(--pending) 18%, var(--panel));
   border: 1px solid color-mix(in srgb, var(--pending) 40%, transparent);
   color: var(--text);
+  cursor: pointer;
   transition: transform 0.55s cubic-bezier(0.2, 0.7, 0.2, 1),
-              opacity 0.3s ease, background 0.3s ease, border-color 0.3s ease;
+              opacity 0.3s ease, background 0.3s ease, border-color 0.3s ease, box-shadow 0.15s ease;
   will-change: transform;
 }
+.chip:hover { box-shadow: 0 0 0 2px rgba(248, 81, 73, 0.5); }
+.chip:hover .chip-inner::after { content: " \00d7"; color: var(--failed); font-weight: 700; }
 .chip.spawning { opacity: 0; }
-.chip.leaving  { opacity: 0; }
+.chip.leaving { opacity: 0; }
 
-.chip.pending {
-  background: color-mix(in srgb, var(--pending) 18%, var(--panel));
-  border-color: color-mix(in srgb, var(--pending) 40%, transparent);
-}
-.chip.running {
-  background: color-mix(in srgb, var(--running) 22%, var(--panel));
-  border-color: color-mix(in srgb, var(--running) 52%, transparent);
-}
-.chip.done {
-  background: color-mix(in srgb, var(--succeeded) 30%, var(--panel));
-  border-color: var(--succeeded);
-}
-.chip.failed {
-  background: color-mix(in srgb, var(--failed) 30%, var(--panel));
-  border-color: var(--failed);
-}
+.chip.pending { background: color-mix(in srgb, var(--pending) 18%, var(--panel)); border-color: color-mix(in srgb, var(--pending) 42%, transparent); }
+.chip.running { background: color-mix(in srgb, var(--running) 22%, var(--panel)); border-color: color-mix(in srgb, var(--running) 52%, transparent); }
+.chip.done { background: color-mix(in srgb, var(--succeeded) 30%, var(--panel)); border-color: var(--succeeded); cursor: default; }
+.chip.failed { background: color-mix(in srgb, var(--failed) 30%, var(--panel)); border-color: var(--failed); cursor: default; }
+.chip.cancelled { background: color-mix(in srgb, var(--cancelled) 26%, var(--panel)); border-color: var(--cancelled); cursor: default; text-decoration: line-through; }
+.chip.done:hover, .chip.failed:hover, .chip.cancelled:hover { box-shadow: none; }
+.chip.done:hover .chip-inner::after,
+.chip.failed:hover .chip-inner::after,
+.chip.cancelled:hover .chip-inner::after { content: ""; }
 
-/* Pop and shake live on the inner span so they can scale without
-   fighting the outer element's positioning transform. */
-.chip-inner { display: inline-block; }
-.chip-inner.pop   { animation: pop 0.4s ease; }
-.chip-inner.shake { animation: shake 0.4s ease; }
-
+.chip-inner { display: inline-block; pointer-events: none; }
+.chip-inner.pop { animation: pop 0.45s ease; }
+.chip-inner.shake { animation: shake 0.45s ease; }
 @keyframes pop {
-  0%   { transform: scale(1); }
-  40%  { transform: scale(1.35); }
+  0% { transform: scale(1); }
+  40% { transform: scale(1.4); }
   100% { transform: scale(1); }
 }
 @keyframes shake {
   0%, 100% { transform: translateX(0); }
-  25%      { transform: translateX(-4px); }
-  75%      { transform: translateX(4px); }
+  25% { transform: translateX(-4px); }
+  75% { transform: translateX(4px); }
+}
+
+/* --- submit bar -------------------------------------------------------- */
+
+form#submit-form { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; }
+.field { display: flex; flex-direction: column; gap: 4px; }
+.field.grow { flex: 1 1 150px; }
+.field.small { flex: 0 0 80px; }
+.field label { font-size: 11px; color: var(--muted); }
+
+input {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 7px 9px;
+  font-family: inherit; font-size: 13px;
+  width: 100%;
+}
+input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.2); }
+
+button[type="submit"] {
+  background: var(--accent);
+  color: #08131f;
+  border: none; border-radius: 6px;
+  padding: 8px 18px;
+  font-family: inherit; font-size: 13px; font-weight: 700;
+  cursor: pointer;
+  transition: transform 0.1s ease, opacity 0.15s ease;
+}
+button[type="submit"]:hover { opacity: 0.92; }
+button[type="submit"]:active { transform: translateY(1px); }
+
+.feedback { font-size: 12px; color: var(--muted); align-self: center; }
+.feedback.ok { color: var(--succeeded); }
+.feedback.error { color: var(--failed); }
+
+/* --- tables ------------------------------------------------------------ */
+
+.tables { display: grid; grid-template-columns: 1.6fr 1fr; gap: 20px; }
+.table-wrap { overflow-x: auto; }
+
+table { width: 100%; border-collapse: collapse; }
+th, td {
+  text-align: left; padding: 7px 8px;
+  border-bottom: 1px solid var(--border-soft);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+th { color: var(--muted); font-weight: normal; font-size: 11px; text-transform: uppercase; letter-spacing: 0.03em; }
+tbody tr { transition: background 0.15s ease; }
+tbody tr:hover { background: rgba(255, 255, 255, 0.02); }
+tbody tr:last-child td { border-bottom: none; }
+
+.empty { color: var(--muted); font-size: 13px; margin: 8px 0 0 0; }
+
+.badge {
+  display: inline-block; padding: 2px 9px;
+  border-radius: 10px; font-size: 11px; font-weight: 600;
+}
+.badge.pending   { color: var(--pending);   background: color-mix(in srgb, var(--pending) 16%, transparent); }
+.badge.running   { color: var(--running);   background: color-mix(in srgb, var(--running) 16%, transparent); }
+.badge.succeeded { color: var(--succeeded); background: color-mix(in srgb, var(--succeeded) 16%, transparent); }
+.badge.failed    { color: var(--failed);    background: color-mix(in srgb, var(--failed) 16%, transparent); }
+.badge.cancelled { color: var(--cancelled); background: color-mix(in srgb, var(--cancelled) 16%, transparent); }
+.badge.alive     { color: var(--alive);     background: color-mix(in srgb, var(--alive) 16%, transparent); }
+.badge.dead      { color: var(--dead);      background: color-mix(in srgb, var(--dead) 16%, transparent); }
+
+.btn-cancel {
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--failed) 50%, transparent);
+  color: var(--failed);
+  border-radius: 5px; padding: 2px 9px;
+  font-family: inherit; font-size: 11px; cursor: pointer;
+  transition: background 0.15s ease;
+}
+.btn-cancel:hover { background: color-mix(in srgb, var(--failed) 14%, transparent); }
+
+.mini-bar { display: inline-flex; align-items: center; gap: 6px; }
+.mini-bar .track { width: 54px; height: 5px; border-radius: 3px; background: rgba(255,255,255,0.08); overflow: hidden; }
+.mini-bar .fill { display: block; height: 100%; background: var(--accent); border-radius: 3px; transition: width 0.4s ease; }
+.mini-bar .fill.mem { background: var(--claude-lite); }
+.mini-bar .num { font-size: 11px; color: var(--muted); }
+
+/* --- footer ------------------------------------------------------------ */
+
+.site-footer {
+  text-align: center; color: var(--muted); font-size: 12px;
+  padding: 8px 0 4px; border-top: 1px solid var(--border-soft);
+}
+.site-footer a { color: var(--accent); text-decoration: none; }
+.site-footer a:hover { text-decoration: underline; }
+
+/* --- mini sprite (header logo) ---------------------------------------- */
+
+.sprite.mini { width: 26px; height: 26px; }
+.sprite.mini .body {
+  position: absolute; inset: 0; height: auto;
+  background: linear-gradient(180deg, var(--claude-lite), var(--claude));
+  border-radius: 8px 8px 9px 9px;
+  box-shadow: inset 0 -4px 0 rgba(0,0,0,0.15);
+  animation: idleBob 0.9s steps(1, end) infinite;
+}
+.sprite.mini .eye { top: 8px; width: 4px; height: 5px; }
+.sprite.mini .eye.left { left: 7px; }
+.sprite.mini .eye.right { right: 7px; }
+
+/* --- responsive -------------------------------------------------------- */
+
+@media (max-width: 900px) {
+  .stats { grid-template-columns: repeat(3, 1fr); }
+  .tables { grid-template-columns: 1fr; }
+}
+@media (max-width: 560px) {
+  .stats { grid-template-columns: repeat(2, 1fr); }
+  .queue-box { width: 120px; }
+  .worker-row { left: 136px; }
 }
