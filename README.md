@@ -67,7 +67,12 @@ go run ./cmd/dispatchctl status <job-id>
 
 Or open **http://localhost:8080** in a browser once the control plane is
 running: a live dashboard shows jobs and workers updating in real time,
-with a form to submit new jobs without touching the CLI.
+with a form to submit new jobs without touching the CLI. The cluster view
+draws each worker as a small sprite and animates jobs moving from the
+queue onto a worker and then finishing (green) or failing (red), so you
+can watch scheduling happen. An "Add worker" button opens a terminal on
+the same machine with a worker ready to run, which is handy for watching
+work spread across a few of them.
 
 Multiple workers can be started against the same control plane. Jobs
 are leased to whichever worker polls first, one at a time, with no

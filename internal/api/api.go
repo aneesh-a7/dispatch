@@ -52,6 +52,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /healthz", s.handleHealthz)
 	s.mux.HandleFunc("GET /metrics", s.handleMetrics)
 
+	// Local dev convenience powering the dashboard's "Add worker" button.
+	// Unlike every route above, this one acts on the control plane's own
+	// machine rather than on shared state. See handleSpawnWorker.
+	s.mux.HandleFunc("POST /v1/dev/spawn-worker", s.handleSpawnWorker)
+
 	// Dashboard: catch-all, lowest priority in Go 1.22's pattern matching,
 	// so every /v1/* route above still wins. Served on the same port as
 	// the API: one process, one port, nothing extra to deploy.

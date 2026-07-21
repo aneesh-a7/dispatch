@@ -14,6 +14,22 @@
 
   <main>
     <section class="panel">
+      <div class="panel-head">
+        <h2>Cluster <span id="cluster-hint" class="count"></span></h2>
+        <button id="add-worker" type="button" class="ghost">+ Add worker</button>
+      </div>
+      <div id="stage" class="stage">
+        <div id="queue-box" class="queue-box">
+          <div class="lane-label">Queue</div>
+        </div>
+        <div id="worker-row" class="worker-row">
+          <p id="no-workers" class="stage-empty">No workers yet. Click <strong>+ Add worker</strong> to open one.</p>
+        </div>
+        <div id="chips-overlay" class="chips-overlay"></div>
+      </div>
+    </section>
+
+    <section class="panel">
       <h2>Submit a job</h2>
       <form id="submit-form">
         <div class="field">
