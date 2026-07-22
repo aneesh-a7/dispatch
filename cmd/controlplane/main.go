@@ -24,6 +24,7 @@ func main() {
 	dataDir := flag.String("data-dir", "./data", "directory for the durable WAL")
 	heartbeatTTL := flag.Duration("heartbeat-ttl", 15*time.Second, "how long a worker can go silent before it's considered dead")
 	reapInterval := flag.Duration("reap-interval", 5*time.Second, "how often to sweep for dead workers")
+	compactInterval := flag.Duration("compact-interval", 1*time.Hour, "how often to compact the WAL")
 	flag.Parse()
 
 	st, err := store.Open(*dataDir)
@@ -40,6 +41,9 @@ func main() {
 	reaperStop := make(chan struct{})
 	go reaper.Run(reaperStop)
 
+	compactStop := make(chan struct{})
+	go runCompactor(st, *compactInterval, compactStop)
+
 	srv := api.NewServer(st, sched)
 	httpServer := &http.Server{
 		Addr:              *addr,
@@ -54,15 +58,13 @@ func main() {
 		}
 	}()
 
-	// Graceful shutdown: on SIGINT/SIGTERM, stop accepting new work and
-	// let in-flight requests finish before exiting, rather than dropping
-	// connections mid-request.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	<-sigCh
 	log.Println("controlplane: shutdown signal received, draining...")
 
 	close(reaperStop)
+	close(compactStop)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -70,4 +72,22 @@ func main() {
 		log.Printf("controlplane: graceful shutdown failed: %v", err)
 	}
 	log.Println("controlplane: stopped")
+}
+
+// runCompactor periodically compacts the WAL until stop is closed.
+func runCompactor(st *store.Store, interval time.Duration, stop chan struct{}) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			if err := st.Compact(); err != nil {
+				log.Printf("controlplane: compaction failed: %v", err)
+			} else {
+				log.Println("controlplane: WAL compacted")
+			}
+		case <-stop:
+			return
+		}
+	}
 }

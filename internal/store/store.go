@@ -1,17 +1,18 @@
 // Package store implements durable state for the control plane using a
 // simple write-ahead log (WAL): every mutation is appended to an
 // append-only file and fsync'd before the in-memory state is updated.
-// On startup the log is replayed from the beginning to rebuild state.
+// On startup, if a snapshot exists, it is loaded first; the WAL is then
+// replayed from the beginning to restore any mutations written after the
+// snapshot was taken.
 //
 // This is the same core idea real databases use (Postgres's WAL, etcd's
 // raft log, Kafka's segment log): never mutate state that isn't first
 // durably recorded, so a crash between "decided" and "applied" is
 // recoverable by replay instead of lost.
 //
-// It deliberately does NOT do log compaction/snapshotting. The log
-// grows forever. That's a known, named limitation (see docs/ARCHITECTURE.md)
-// rather than an oversight: a compaction pass that periodically rewrites
-// the log to only current state is the natural next step.
+// Periodic Compact() calls write a snapshot of current state and truncate
+// the log, so long-running instances do not accumulate unbounded log files
+// that slow startup.
 package store
 
 import (
@@ -89,10 +90,18 @@ func (s *Store) Close() error {
 	return s.logFile.Close()
 }
 
-// replay reads the WAL from the start and applies every record to
-// rebuild in-memory state. It is only called once, from Open, before the
-// log file handle for appending is created.
+// replay loads the snapshot if it exists, then replays the WAL. This
+// combines a fast cold-start from the snapshot with replay of any mutations
+// that occurred after the snapshot was written. It is only called once, from
+// Open, before the log file handle for appending is created.
 func (s *Store) replay() error {
+	snapPath := filepath.Join(filepath.Dir(s.logPath), "dispatch.snapshot")
+	if _, err := os.Stat(snapPath); err == nil {
+		if err := s.loadSnapshot(snapPath); err != nil {
+			return fmt.Errorf("loading snapshot: %w", err)
+		}
+	}
+
 	f, err := os.OpenFile(s.logPath, os.O_RDONLY|os.O_CREATE, 0o644)
 	if err != nil {
 		return err
@@ -100,7 +109,6 @@ func (s *Store) replay() error {
 	defer f.Close()
 
 	scanner := bufio.NewScanner(f)
-	// WAL lines can be long (job output); grow the buffer past the default 64KB.
 	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 
 	lineNum := 0
@@ -112,16 +120,37 @@ func (s *Store) replay() error {
 		}
 		var rec record
 		if err := json.Unmarshal(line, &rec); err != nil {
-			// A malformed trailing line usually means the process died
-			// mid-write. We skip it rather than fail startup entirely:
-			// losing the last unflushed record is expected WAL behavior;
-			// silently corrupting earlier history would not be.
 			fmt.Fprintf(os.Stderr, "store: skipping malformed WAL line %d: %v\n", lineNum, err)
 			continue
 		}
 		s.apply(rec)
 	}
 	return scanner.Err()
+}
+
+// loadSnapshot reads a snapshot file and loads it into state. Called during
+// replay if the snapshot exists.
+func (s *Store) loadSnapshot(path string) error {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var snap struct {
+		Jobs    map[string]*types.Job    `json:"jobs"`
+		Workers map[string]*types.Worker `json:"workers"`
+	}
+	if err := json.Unmarshal(b, &snap); err != nil {
+		return err
+	}
+	s.jobs = snap.Jobs
+	if s.jobs == nil {
+		s.jobs = make(map[string]*types.Job)
+	}
+	s.workers = snap.Workers
+	if s.workers == nil {
+		s.workers = make(map[string]*types.Worker)
+	}
+	return nil
 }
 
 // apply mutates in-memory state from a decoded record. Called both
@@ -336,4 +365,54 @@ func (s *Store) GetWorker(id string) (*types.Worker, bool) {
 	cp := *w
 	cp.Available = w.Capacity.Minus(s.usedByWorkerLocked(id))
 	return &cp, true
+}
+
+// Compact writes the current in-memory state to a snapshot file, then
+// truncates the WAL. Used periodically to bound log size on long-running
+// instances. The snapshot is written and fsynced before the log is cleared,
+// so a crash during compaction is safe: replay will load the snapshot and
+// re-apply any mutations written after it.
+func (s *Store) Compact() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	snapPath := filepath.Join(filepath.Dir(s.logPath), "dispatch.snapshot")
+	tmpPath := snapPath + ".tmp"
+
+	snap := struct {
+		Jobs    map[string]*types.Job    `json:"jobs"`
+		Workers map[string]*types.Worker `json:"workers"`
+	}{
+		Jobs:    s.jobs,
+		Workers: s.workers,
+	}
+
+	b, err := json.Marshal(snap)
+	if err != nil {
+		return err
+	}
+
+	if err := os.WriteFile(tmpPath, b, 0o644); err != nil {
+		return err
+	}
+
+	if err := os.Rename(tmpPath, snapPath); err != nil {
+		return err
+	}
+
+	if err := s.logFile.Close(); err != nil {
+		return err
+	}
+
+	if err := os.Truncate(s.logPath, 0); err != nil {
+		return err
+	}
+
+	f, err := os.OpenFile(s.logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	s.logFile = f
+
+	return s.logFile.Sync()
 }

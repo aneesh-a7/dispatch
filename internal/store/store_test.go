@@ -1,6 +1,8 @@
 package store
 
 import (
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -247,6 +249,84 @@ func TestReplay_RecoversStateAfterReopen(t *testing.T) {
 
 	if _, ok := s2.GetWorker("w-1"); !ok {
 		t.Error("GetWorker() after reopen: ok = false, want true")
+	}
+}
+
+func TestCompact_ReducesLogSize(t *testing.T) {
+	dir := t.TempDir()
+
+	s1, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+
+	now := time.Now()
+	job := testJob("job-1", 0, now)
+	if err := s1.CreateJob(job); err != nil {
+		t.Fatalf("CreateJob() error = %v", err)
+	}
+	worker := &types.Worker{ID: "w-1", Address: "local", Status: types.WorkerAlive,
+		Capacity: types.Resources{CPU: 4, Memory: 4096}, RegisteredAt: now, LastHeartbeat: now}
+	if err := s1.RegisterWorker(worker); err != nil {
+		t.Fatalf("RegisterWorker() error = %v", err)
+	}
+
+	// Write a lot of updates to grow the WAL.
+	for i := 0; i < 100; i++ {
+		job.UpdatedAt = now.Add(time.Duration(i) * time.Second)
+		if err := s1.UpdateJob(job); err != nil {
+			t.Fatalf("UpdateJob() error = %v", err)
+		}
+	}
+
+	// Get WAL size before compaction.
+	walInfo, err := os.Stat(s1.logPath)
+	if err != nil {
+		t.Fatalf("Stat() error = %v", err)
+	}
+	walSizeBefore := walInfo.Size()
+
+	// Compact should write a snapshot and truncate the WAL.
+	if err := s1.Compact(); err != nil {
+		t.Fatalf("Compact() error = %v", err)
+	}
+
+	snapPath := filepath.Join(dir, "dispatch.snapshot")
+	if _, err := os.Stat(snapPath); os.IsNotExist(err) {
+		t.Fatal("Compact() did not create snapshot file")
+	}
+
+	// WAL should be much smaller (only a fresh header or empty).
+	walInfo, err = os.Stat(s1.logPath)
+	if err != nil {
+		t.Fatalf("Stat() after compact error = %v", err)
+	}
+	walSizeAfter := walInfo.Size()
+	if walSizeAfter >= walSizeBefore {
+		t.Fatalf("WAL size after compact = %d, before = %d; want reduction", walSizeAfter, walSizeBefore)
+	}
+
+	if err := s1.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	// Reopen and verify state is recovered from the snapshot.
+	s2, err := Open(dir)
+	if err != nil {
+		t.Fatalf("second Open() error = %v", err)
+	}
+	defer s2.Close()
+
+	got, ok := s2.GetJob("job-1")
+	if !ok {
+		t.Fatal("GetJob() after reopen: ok = false, want true")
+	}
+	if got.UpdatedAt.Unix() != job.UpdatedAt.Unix() {
+		t.Errorf("GetJob() UpdatedAt = %v, want %v", got.UpdatedAt, job.UpdatedAt)
+	}
+
+	if _, ok := s2.GetWorker("w-1"); !ok {
+		t.Fatal("GetWorker() after reopen: ok = false, want true")
 	}
 }
 

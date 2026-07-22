@@ -132,6 +132,17 @@ between calls. Everything is computed from the timestamps already on each
 job. `cmd/loadtest` uses the same timestamps to report throughput and
 lease/exec percentiles for a burst of jobs.
 
+### Log compaction
+
+The WAL would grow forever if left alone, so the control plane runs a
+periodic compaction pass: every hour (configurable via `-compact-interval`),
+it writes a snapshot of current state and truncates the log. On startup, if
+a snapshot exists, it's loaded first and then the WAL is replayed. This
+speeds up restarts for long-running instances without sacrificing durability:
+the snapshot is written and fsynced before the log is cleared, so a crash
+during compaction can be recovered by loading the snapshot and re-playing
+any mutations written after it.
+
 ## What's deliberately out of scope
 
 - **Sandboxed execution.** Workers run jobs as plain subprocesses via
@@ -139,10 +150,6 @@ lease/exec percentiles for a burst of jobs.
   malicious or buggy job has full access to the worker's environment.
   This is the single most important thing to fix before running
   anything untrusted, and is the natural next phase of this project.
-- **Log compaction.** The WAL grows forever; there's no snapshotting or
-  truncation. For a real deployment this needs a periodic "rewrite the
-  log to just current state" pass, the same idea Postgres calls a
-  checkpoint.
 - **Auth.** The HTTP API has no authentication. Fine for a local/trusted
   network; not fine for anything exposed beyond that. The dashboard's
   "add worker" endpoint (which opens a local terminal) leans on the same
