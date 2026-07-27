@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -195,7 +196,9 @@ func runJob(c *client.Client, job *types.Job, cancelPollInterval, jobTimeout tim
 	watcherDone := make(chan struct{})
 	go watchForCancel(ctx, c, job.ID, cancelPollInterval, &cancelled, cancel, watcherDone)
 
-	output, runErr := execute(ctx, job.Command, job.Args)
+	sink := newOutputSink(c, job.ID, outputFlushInterval)
+	output, runErr := execute(ctx, job.Command, job.Args, sink)
+	sink.stop()
 	close(watcherDone)
 
 	switch {
@@ -234,8 +237,116 @@ func watchForCancel(ctx context.Context, c *client.Client, jobID string, interva
 	}
 }
 
-func execute(ctx context.Context, command string, args []string) (string, error) {
+// execute runs the job, writing its combined stdout and stderr into sink
+// as it is produced and returning the whole thing at the end.
+//
+// This used to be a single cmd.CombinedOutput(), which was simpler but
+// meant nothing at all was visible until the process exited. Wiring both
+// streams into one writer keeps the interleaving CombinedOutput gave us
+// while making the bytes available as they arrive.
+func execute(ctx context.Context, command string, args []string, sink *outputSink) (string, error) {
 	cmd := exec.CommandContext(ctx, command, args...)
-	out, err := cmd.CombinedOutput()
-	return string(out), err
+	cmd.Stdout = sink
+	cmd.Stderr = sink
+	err := cmd.Run()
+	return sink.collected(), err
+}
+
+// outputSink is what the running job's stdout and stderr are wired into.
+// It keeps a capped copy for the final completion report and forwards new
+// bytes to the control plane on a timer so `dispatchctl logs -f` has
+// something to follow.
+//
+// The forwarding is deliberately time-based rather than per-write: a
+// program printing a line at a time would otherwise generate one HTTP
+// request per line, which is a lot of traffic to watch a progress bar.
+type outputSink struct {
+	client *client.Client
+	jobID  string
+
+	mu       sync.Mutex
+	retained []byte // capped copy for the completion report
+	dropped  bool   // retained lost bytes to the cap
+	pending  []byte // produced but not yet forwarded
+
+	done chan struct{}
+	wg   sync.WaitGroup
+}
+
+const (
+	outputFlushInterval = 700 * time.Millisecond
+	// retainedOutputCap bounds what a single job can make this worker
+	// hold. A job that prints without limit should not be able to take the
+	// worker down with it, and the tail is the part anyone reads.
+	retainedOutputCap = 1 << 20 // 1 MiB
+)
+
+func newOutputSink(c *client.Client, jobID string, flushEvery time.Duration) *outputSink {
+	s := &outputSink{client: c, jobID: jobID, done: make(chan struct{})}
+	s.wg.Add(1)
+	go s.flushLoop(flushEvery)
+	return s
+}
+
+// Write satisfies io.Writer for the subprocess's streams. It must not
+// block on the network: the job's own progress runs through here, so a
+// slow control plane would otherwise apply backpressure to the job
+// itself. Buffer here, send from the flush goroutine.
+func (s *outputSink) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pending = append(s.pending, p...)
+	s.retained = append(s.retained, p...)
+	if overflow := len(s.retained) - retainedOutputCap; overflow > 0 {
+		s.retained = s.retained[overflow:]
+		s.dropped = true
+	}
+	return len(p), nil
+}
+
+func (s *outputSink) flushLoop(every time.Duration) {
+	defer s.wg.Done()
+	ticker := time.NewTicker(every)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			s.flush()
+		case <-s.done:
+			s.flush() // catch whatever the job printed just before exiting
+			return
+		}
+	}
+}
+
+func (s *outputSink) flush() {
+	s.mu.Lock()
+	chunk := s.pending
+	s.pending = nil
+	s.mu.Unlock()
+
+	if len(chunk) == 0 {
+		return
+	}
+	// Streaming is a convenience, not a guarantee: the authoritative copy
+	// goes out with the completion report. A failed push is logged at most
+	// once and the bytes are dropped rather than retried, so a struggling
+	// control plane cannot make this worker hoard memory.
+	if err := s.client.AppendOutput(s.jobID, chunk); err != nil {
+		log.Printf("worker: streaming output for job %s failed: %v", s.jobID, err)
+	}
+}
+
+func (s *outputSink) stop() {
+	close(s.done)
+	s.wg.Wait()
+}
+
+func (s *outputSink) collected() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.dropped {
+		return "[earlier output truncated by the worker]\n" + string(s.retained)
+	}
+	return string(s.retained)
 }

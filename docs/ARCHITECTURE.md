@@ -191,6 +191,54 @@ backup job). Cancelling does. "Stop this run" and "stop this recurring
 job" are genuinely ambiguous, and between the two, a cancel that keeps
 firing every hour is a much worse surprise than one that stops too much.
 
+### Live output streaming
+
+Workers used to call `cmd.CombinedOutput()`, which meant a job's output
+existed only as a lump handed over at the end. A job that had been
+running for twenty minutes could tell you nothing about what it was
+doing, which for the long batch scripts this thing exists to run is most
+of the time you actually care.
+
+Now the worker wires both streams into one writer that keeps a copy for
+the final report and forwards new bytes to the control plane every
+700ms. `dispatchctl logs -f` polls for them.
+
+Three decisions carried this:
+
+**The live buffer is the one piece of control plane state that is
+deliberately not durable.** Putting output chunks in the WAL would mean
+an fsync per chunk of a chatty job's stdout, which is precisely the write
+pattern the WAL is worst at, and it would slow down the job submissions
+that genuinely need durability. It would also be redundant, because the
+complete output is already written once in the completion report. Losing
+the live tail to a restart costs you a progress bar, not a record. This
+is the clearest case in the project of something that should *not* go
+through the durable path, and it was worth being explicit about that
+rather than reflexively persisting everything.
+
+**Flushing is on a timer, not per write.** A program printing a line at a
+time would otherwise generate one HTTP request per line. And the sink's
+`Write` never blocks on the network: the job's own output goes through
+it, so a slow control plane would otherwise apply backpressure to the
+job itself, letting the monitoring system slow down the thing it is
+monitoring.
+
+**Memory is bounded in both directions, and says so when it bites.** The
+control plane keeps the last 256KB per running job, dropping oldest
+first, because someone watching a long job almost always wants to know
+what it is doing now. A reader who has fallen behind that window is told
+`truncated` rather than being quietly handed a stream with a hole in it.
+The worker separately caps what it retains for the final report at 1MB
+and prefixes a note when it drops anything, because that copy is the one
+that is gone for good.
+
+Buffers are freed on completion, but that alone would leak: a job can
+also stop running because the reaper decided its worker died, a path
+that never touches the output code. Rather than chase every exit, the
+reaper reconciles buffers against the set of jobs actually running on
+each sweep. A buffer can then survive at most one sweep interval no
+matter how its job ended, including ways I have not thought of yet.
+
 ### Worker capacity detection
 
 Workers measure their own CPU and memory at startup instead of defaulting

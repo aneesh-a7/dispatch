@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/aneesh/dispatch/internal/client"
 	"github.com/aneesh/dispatch/internal/types"
@@ -38,6 +39,8 @@ func main() {
 		cmdList(c, args[1:])
 	case "cancel":
 		cmdCancel(c, args[1:])
+	case "logs":
+		cmdLogs(c, args[1:])
 	default:
 		usage()
 		os.Exit(1)
@@ -50,6 +53,7 @@ func usage() {
 Usage:
   dispatchctl submit [-priority N] [-retries N] [-cpu N] [-memory MB] [-webhook URL] <command> [args...]
   dispatchctl status <job-id>
+  dispatchctl logs [-f] <job-id>
   dispatchctl cancel <job-id>
   dispatchctl list
 
@@ -117,6 +121,49 @@ func cmdCancel(c *client.Client, args []string) {
 		fmt.Printf("cancelled job %s\n", job.ID)
 	} else {
 		fmt.Printf("cancel requested for job %s (currently %s); the worker will stop it shortly\n", job.ID, job.Status)
+	}
+}
+
+// cmdLogs prints a job's output, optionally following it as it is
+// produced. The control plane serves the live buffer while a job runs and
+// the durable record once it has finished, so following across the moment
+// a job ends needs no special handling here: the same loop keeps reading
+// until the server says the job is done.
+func cmdLogs(c *client.Client, args []string) {
+	fs := flag.NewFlagSet("logs", flag.ExitOnError)
+	follow := fs.Bool("f", false, "keep printing output until the job finishes")
+	interval := fs.Duration("interval", time.Second, "how often to poll when following")
+	fs.Parse(args)
+
+	rest := fs.Args()
+	if len(rest) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: dispatchctl logs [-f] <job-id>")
+		os.Exit(1)
+	}
+	jobID := rest[0]
+
+	var offset int64
+	for {
+		chunk, err := c.FetchOutput(jobID, offset)
+		fatalIf(err)
+
+		// Truncated is only ever set when bytes the caller asked for are
+		// genuinely gone, so it always deserves saying. An earlier version
+		// of this suppressed it on the first read, which hid the warning
+		// in exactly the case it matters most: asking for a chatty job's
+		// whole output and quietly getting only the tail.
+		if chunk.Truncated {
+			fmt.Fprintf(os.Stderr, "[earlier output dropped from the live buffer; showing from byte %d. The full output is kept once the job finishes.]\n", chunk.Offset)
+		}
+		if chunk.Data != "" {
+			fmt.Print(chunk.Data)
+		}
+		offset = chunk.NextOffset
+
+		if chunk.Done || !*follow {
+			return
+		}
+		time.Sleep(*interval)
 	}
 }
 

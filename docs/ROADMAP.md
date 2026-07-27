@@ -178,6 +178,25 @@ sweep can't double-queue.
 
 Failing keeps the series going; cancelling ends it.
 
+### Live output streaming (done)
+
+`dispatchctl logs [-f]` tails a running job. Workers forward output as
+it's produced instead of handing over one lump at the end, and the same
+command reads a running job (live buffer) and a finished one (durable
+record) without the caller caring which.
+
+The design note worth keeping: the live buffer is deliberately not
+durable. Output chunks in the WAL would mean an fsync per chunk of a
+chatty job's stdout, which is the write pattern that path is worst at,
+and the complete output is already recorded once on completion anyway.
+This is the clearest example in the project of something that should not
+be persisted, which felt worth being explicit about given how much of
+the rest of this codebase is an argument for durability.
+
+Bounded at 256KB per running job on the control plane and 1MB retained
+per job on the worker, both of which announce themselves when they bite
+rather than silently handing back a stream with a hole in it.
+
 ### Auto-detected worker capacity (done)
 
 Workers measure their own CPU and memory at startup. Per-platform,
@@ -206,12 +225,6 @@ near-term plan.
   single-node control plane with auth and TLS already covers "a small
   group running real workloads," just not "zero-downtime through a node
   failure."
-- **Live output streaming.** Right now the worker buffers a job's
-  combined stdout/stderr with `cmd.CombinedOutput()` and only reports it
-  once the process exits, so `dispatchctl status` shows nothing useful
-  for a still-running job. A `dispatchctl logs -f <job-id>` needs the
-  worker to persist and expose partial output incrementally instead,
-  which is a bigger change to the execution path than it sounds.
 - **Background service wrappers.** A systemd unit file, a launchd plist,
   and Windows service registration so the control plane and worker run
   as managed background services instead of foreground terminal

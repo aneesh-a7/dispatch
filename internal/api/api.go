@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/aneesh/dispatch/internal/idgen"
+	"github.com/aneesh/dispatch/internal/livelog"
 	"github.com/aneesh/dispatch/internal/notify"
 	"github.com/aneesh/dispatch/internal/scheduler"
 	"github.com/aneesh/dispatch/internal/store"
@@ -28,21 +29,37 @@ type Config struct {
 	Token string
 	// Notifier delivers job-finished webhooks. May be nil.
 	Notifier *notify.Notifier
+	// LiveLog buffers running jobs' output for streaming. The control
+	// plane owns it rather than the API because the reaper shares it: the
+	// API fills it, the reaper is what guarantees it gets emptied.
+	LiveLog *livelog.Log
 }
+
+// liveOutputPerJobCap bounds how much of a running job's output is held
+// in memory for streaming. Generous enough to cover the tail anyone
+// actually reads, small enough that a chatty job cannot grow without
+// limit.
+const liveOutputPerJobCap = 256 * 1024
 
 type Server struct {
 	store    *store.Store
 	sched    *scheduler.Scheduler
 	notifier *notify.Notifier
+	live     *livelog.Log
 	mux      *http.ServeMux
 	handler  http.Handler
 }
 
 func NewServer(s *store.Store, sc *scheduler.Scheduler, cfg Config) *Server {
+	live := cfg.LiveLog
+	if live == nil {
+		live = livelog.New(liveOutputPerJobCap)
+	}
 	srv := &Server{
 		store:    s,
 		sched:    sc,
 		notifier: cfg.Notifier,
+		live:     live,
 		mux:      http.NewServeMux(),
 	}
 	srv.routes(cfg.Token != "")
@@ -69,6 +86,10 @@ func (s *Server) routes(authEnabled bool) {
 	s.mux.HandleFunc("POST /v1/workers/{id}/lease", s.handleLease)
 
 	s.mux.HandleFunc("POST /v1/jobs/{id}/complete", s.handleCompleteJob)
+
+	// Live output: workers push, everyone else pulls.
+	s.mux.HandleFunc("POST /v1/jobs/{id}/output", s.handleAppendOutput)
+	s.mux.HandleFunc("GET /v1/jobs/{id}/output", s.handleGetOutput)
 
 	s.mux.HandleFunc("GET /healthz", s.handleHealthz)
 	s.mux.HandleFunc("GET /metrics", s.handleMetrics)
@@ -344,6 +365,10 @@ func (s *Server) handleCompleteJob(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to persist completion: "+err.Error())
 		return
 	}
+	// The complete output is now in the job record, so the live copy is
+	// redundant. Dropping it also resets the stream for a retry, which
+	// should start from an empty log rather than the failed attempt's.
+	s.live.Drop(id)
 	if job.Status.Terminal() {
 		// A failure with retry budget left went back to pending above, so
 		// it is not terminal and does not notify: one notification per job
@@ -351,6 +376,96 @@ func (s *Server) handleCompleteJob(w http.ResponseWriter, r *http.Request) {
 		s.notifier.JobFinished(job)
 	}
 	writeJSON(w, http.StatusOK, job)
+}
+
+type appendOutputRequest struct {
+	Data string `json:"data"`
+}
+
+// outputResponse is one window onto a job's output. offset/next_offset
+// are absolute positions in the job's whole output stream, so a follower
+// can resume exactly where it stopped instead of guessing from lengths.
+type outputResponse struct {
+	Offset     int64  `json:"offset"`
+	NextOffset int64  `json:"next_offset"`
+	Data       string `json:"data"`
+	Done       bool   `json:"done"`
+	Truncated  bool   `json:"truncated"`
+}
+
+// handleAppendOutput takes a chunk of output from the worker running a
+// job. This is the one thing workers push rather than pull, and it is
+// push for a reason: the control plane cannot dial a worker to ask what
+// it has printed so far, which is the same constraint that made leasing
+// pull-based in the first place.
+func (s *Server) handleAppendOutput(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var req appendOutputRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+		return
+	}
+	job, ok := s.store.GetJob(id)
+	if !ok {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	// A late chunk from a job that already finished is dropped rather
+	// than resurrecting a buffer nothing will ever read or free.
+	if job.Status.Terminal() {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	s.live.Append(id, []byte(req.Data))
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleGetOutput serves a job's output from the live buffer while it
+// runs and from the durable record once it has finished. Callers get one
+// consistent view either way, which is what lets `dispatchctl logs -f`
+// follow a job across the moment it finishes without special-casing it.
+func (s *Server) handleGetOutput(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	job, ok := s.store.GetJob(id)
+	if !ok {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+
+	var offset int64
+	if v := r.URL.Query().Get("offset"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 0 {
+			writeError(w, http.StatusBadRequest, "offset must be a non-negative integer")
+			return
+		}
+		offset = n
+	}
+
+	if job.Status.Terminal() {
+		// The completion report is authoritative and complete, so serve
+		// from it and stop. The live buffer may have dropped early bytes;
+		// this one never did.
+		full := []byte(job.Output)
+		if offset > int64(len(full)) {
+			offset = int64(len(full))
+		}
+		writeJSON(w, http.StatusOK, outputResponse{
+			Offset:     offset,
+			NextOffset: int64(len(full)),
+			Data:       string(full[offset:]),
+			Done:       true,
+		})
+		return
+	}
+
+	data, from, next, truncated, _ := s.live.Read(id, offset)
+	writeJSON(w, http.StatusOK, outputResponse{
+		Offset:     from,
+		NextOffset: next,
+		Data:       string(data),
+		Truncated:  truncated,
+	})
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {

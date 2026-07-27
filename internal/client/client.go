@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/aneesh/dispatch/internal/types"
@@ -166,4 +167,39 @@ type CompleteJobRequest struct {
 
 func (c *Client) CompleteJob(jobID string, req CompleteJobRequest) error {
 	return c.do(http.MethodPost, "/v1/jobs/"+jobID+"/complete", req, nil)
+}
+
+// --- Job output --------------------------------------------------------
+
+// OutputChunk is a window onto a job's output. Offset and NextOffset are
+// absolute positions in the job's whole output stream, so a follower
+// resumes exactly where it left off rather than inferring position from
+// what it has already printed.
+type OutputChunk struct {
+	Offset     int64  `json:"offset"`
+	NextOffset int64  `json:"next_offset"`
+	Data       string `json:"data"`
+	Done       bool   `json:"done"`
+	Truncated  bool   `json:"truncated"`
+}
+
+// AppendOutput streams a chunk of a running job's output to the control
+// plane. Only the worker executing the job calls this.
+func (c *Client) AppendOutput(jobID string, data []byte) error {
+	body := struct {
+		Data string `json:"data"`
+	}{Data: string(data)}
+	return c.do(http.MethodPost, "/v1/jobs/"+jobID+"/output", body, nil)
+}
+
+// FetchOutput reads a job's output starting at offset. While the job runs
+// this comes from the live buffer; once it finishes, from the durable
+// record, so a follower can read straight through the transition.
+func (c *Client) FetchOutput(jobID string, offset int64) (*OutputChunk, error) {
+	var chunk OutputChunk
+	path := "/v1/jobs/" + jobID + "/output?offset=" + strconv.FormatInt(offset, 10)
+	if err := c.do(http.MethodGet, path, nil, &chunk); err != nil {
+		return nil, err
+	}
+	return &chunk, nil
 }

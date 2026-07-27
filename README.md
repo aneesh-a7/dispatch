@@ -90,6 +90,30 @@ Multiple workers can be started against the same control plane. Jobs are
 leased to whichever worker has free capacity, one at a time per worker,
 with no double-dispatch (see `Store.LeaseNextJob`).
 
+## Watching a job while it runs
+
+`dispatchctl logs -f` tails a job's output as it's produced, rather than
+making you wait for the whole thing at the end:
+
+```bash
+dispatchctl logs -f <job-id>
+```
+
+Drop the `-f` for a one-shot read. Either way the same command works on a
+job that's still running and one that finished last week: while a job
+runs, output comes from a live buffer on the control plane; once it
+finishes, from the durable record. Following across the moment a job ends
+just works, and `-f` exits on its own when the job does.
+
+The live buffer keeps the last 256KB per running job and is held in
+memory only, never written to the write-ahead log. A job that prints
+faster than you can read will have its earlier output scroll out of that
+window, and `logs` tells you when that has happened. The complete output
+is still recorded when the job finishes, so nothing is lost permanently.
+Workers cap what they retain for that final report at 1MB, which is the
+one place output really can be dropped for good, and it says so in the
+output when it happens.
+
 ## Chaining jobs and repeating them
 
 Two flags cover most of what turns a pile of one-off commands into
@@ -281,6 +305,7 @@ dispatchctl [-control-plane URL] [-token TOKEN] <command>
   submit [-priority N] [-retries N] [-cpu N] [-memory MB] [-webhook URL]
          [-after id1,id2] [-every 1h] <command> [args...]
   status <job-id>
+  logs [-f] <job-id>
   cancel <job-id>
   list
 ```
@@ -302,6 +327,7 @@ internal/
   notify/         job-finished webhook delivery
   config/         optional JSON config files
   sysinfo/        per-platform CPU/memory detection for worker capacity
+  livelog/        in-memory output buffers for running jobs (not durable, on purpose)
   idgen/          stdlib-only sortable ID generation
   webui/          embedded live dashboard (static HTML/CSS/JS, served by the control plane)
 docs/
@@ -313,10 +339,10 @@ docs/
 
 Built and tested end to end: a durable control plane with WAL compaction,
 pull-based workers, priority + resource-aware (bin-packing) leasing,
-job dependencies, recurring jobs, retries, dead-worker reaping, job
-cancellation, bearer-token auth, TLS, job-finished webhooks, JSON config
-files, auto-detected worker capacity, Prometheus metrics, a load-test
-tool, and a live sprite dashboard.
+job dependencies, recurring jobs, live output streaming, retries,
+dead-worker reaping, job cancellation, bearer-token auth, TLS,
+job-finished webhooks, JSON config files, auto-detected worker capacity,
+Prometheus metrics, a load-test tool, and a live sprite dashboard.
 
 Still deliberately out of scope: sandboxed execution (jobs run as plain
 subprocesses with full access to their worker's environment) and a

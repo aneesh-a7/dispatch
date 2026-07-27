@@ -10,6 +10,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/aneesh/dispatch/internal/livelog"
 	"github.com/aneesh/dispatch/internal/notify"
 	"github.com/aneesh/dispatch/internal/store"
 	"github.com/aneesh/dispatch/internal/types"
@@ -42,14 +43,15 @@ func (sc *Scheduler) Lease(workerID string) (*types.Job, bool) {
 type Reaper struct {
 	store        *store.Store
 	notifier     *notify.Notifier
+	live         *livelog.Log
 	heartbeatTTL time.Duration
 	interval     time.Duration
 }
 
-// NewReaper builds a reaper. n may be nil, in which case no webhooks are
-// sent for jobs the reaper fails permanently.
-func NewReaper(s *store.Store, n *notify.Notifier, heartbeatTTL, interval time.Duration) *Reaper {
-	return &Reaper{store: s, notifier: n, heartbeatTTL: heartbeatTTL, interval: interval}
+// NewReaper builds a reaper. n and live may both be nil, in which case
+// webhooks and live-output cleanup respectively are skipped.
+func NewReaper(s *store.Store, n *notify.Notifier, live *livelog.Log, heartbeatTTL, interval time.Duration) *Reaper {
+	return &Reaper{store: s, notifier: n, live: live, heartbeatTTL: heartbeatTTL, interval: interval}
 }
 
 // Run blocks, sweeping on a ticker until stop is closed.
@@ -80,6 +82,23 @@ func (r *Reaper) sweep() {
 	// Deliberately silent: queueing the next run is routine bookkeeping,
 	// and logging every tick of an hourly job would drown the log.
 	r.store.SweepRecurringJobs()
+
+	r.releaseLiveOutput()
+}
+
+// releaseLiveOutput frees buffered output for jobs that are no longer
+// running, whichever way they stopped.
+func (r *Reaper) releaseLiveOutput() {
+	if r.live == nil {
+		return
+	}
+	running := make(map[string]bool)
+	for _, j := range r.store.ListJobs() {
+		if j.Status == types.JobRunning {
+			running[j.ID] = true
+		}
+	}
+	r.live.RetainOnly(running)
 }
 
 func (r *Reaper) sweepDeadWorkers() {

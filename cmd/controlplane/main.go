@@ -16,10 +16,15 @@ import (
 
 	"github.com/aneesh/dispatch/internal/api"
 	"github.com/aneesh/dispatch/internal/config"
+	"github.com/aneesh/dispatch/internal/livelog"
 	"github.com/aneesh/dispatch/internal/notify"
 	"github.com/aneesh/dispatch/internal/scheduler"
 	"github.com/aneesh/dispatch/internal/store"
 )
+
+// liveOutputPerJobCap bounds the in-memory tail kept per running job for
+// `dispatchctl logs`. See internal/livelog for why this is not durable.
+const liveOutputPerJobCap = 256 * 1024
 
 func main() {
 	addr := flag.String("addr", ":8080", "address to listen on")
@@ -58,14 +63,18 @@ func main() {
 
 	sched := scheduler.New(st)
 
-	reaper := scheduler.NewReaper(st, notifier, *heartbeatTTL, *reapInterval)
+	// Shared between the API (which fills it as workers stream output) and
+	// the reaper (which empties it once jobs stop running).
+	live := livelog.New(liveOutputPerJobCap)
+
+	reaper := scheduler.NewReaper(st, notifier, live, *heartbeatTTL, *reapInterval)
 	reaperStop := make(chan struct{})
 	go reaper.Run(reaperStop)
 
 	compactStop := make(chan struct{})
 	go runCompactor(st, *compactInterval, compactStop)
 
-	srv := api.NewServer(st, sched, api.Config{Token: *token, Notifier: notifier})
+	srv := api.NewServer(st, sched, api.Config{Token: *token, Notifier: notifier, LiveLog: live})
 	httpServer := &http.Server{
 		Addr:              *addr,
 		Handler:           srv,
