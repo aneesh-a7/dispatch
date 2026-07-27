@@ -20,6 +20,7 @@ import (
 
 	"github.com/aneesh/dispatch/internal/client"
 	"github.com/aneesh/dispatch/internal/config"
+	"github.com/aneesh/dispatch/internal/sysinfo"
 	"github.com/aneesh/dispatch/internal/types"
 )
 
@@ -27,8 +28,8 @@ func main() {
 	controlPlaneURL := flag.String("control-plane", envOr("DISPATCH_ADDR", "http://localhost:8080"), "control plane base URL (or $DISPATCH_ADDR)")
 	token := flag.String("token", os.Getenv("DISPATCH_TOKEN"), "bearer token, if the control plane requires auth (or $DISPATCH_TOKEN)")
 	address := flag.String("address", "local", "informational address reported at registration")
-	cpu := flag.Int("cpu", 4, "CPU capacity this worker advertises (abstract units)")
-	memory := flag.Int("memory", 4096, "memory capacity this worker advertises (MB)")
+	cpu := flag.Int("cpu", 0, "CPU capacity this worker advertises (0 auto-detects from the machine)")
+	memory := flag.Int("memory", 0, "memory capacity this worker advertises in MB (0 auto-detects from the machine)")
 	pollInterval := flag.Duration("poll-interval", 2*time.Second, "how often to ask for work when idle")
 	heartbeatInterval := flag.Duration("heartbeat-interval", 5*time.Second, "how often to heartbeat (must be well under the control plane's heartbeat-ttl)")
 	cancelPollInterval := flag.Duration("cancel-poll-interval", 1*time.Second, "how often a running job checks whether it has been cancelled")
@@ -43,6 +44,8 @@ func main() {
 		}
 		applyWorkerConfig(cfg, controlPlaneURL, token, address, cpu, memory, pollInterval, jobTimeout)
 	}
+
+	resolveCapacity(cpu, memory)
 
 	c := client.New(*controlPlaneURL).WithToken(*token)
 
@@ -60,6 +63,32 @@ func main() {
 	defer close(stopHeartbeat)
 
 	pollLoop(c, worker.ID, *pollInterval, *cancelPollInterval, *jobTimeout)
+}
+
+// fallbackCapacity is used when a platform has no memory detection. It is
+// deliberately modest: under-promising costs some idle capacity, while
+// over-promising gets jobs bin-packed onto a machine that cannot hold
+// them.
+const fallbackMemoryMB = 4096
+
+// resolveCapacity fills in any capacity the operator left at zero by
+// asking the machine. Anything set explicitly (by flag or config file) is
+// left alone: a person who typed a number usually meant it, often to hold
+// back part of a machine they are also using for something else.
+func resolveCapacity(cpu, memory *int) {
+	if *cpu == 0 {
+		*cpu = sysinfo.DetectCPU()
+		log.Printf("worker: detected %d CPUs", *cpu)
+	}
+	if *memory == 0 {
+		if mb, ok := sysinfo.DetectMemoryMB(); ok {
+			*memory = mb
+			log.Printf("worker: detected %d MB of memory", mb)
+		} else {
+			*memory = fallbackMemoryMB
+			log.Printf("worker: could not detect memory on this platform, defaulting to %d MB (override with -memory)", fallbackMemoryMB)
+		}
+	}
 }
 
 // applyWorkerConfig fills in values from a config file for flags the user

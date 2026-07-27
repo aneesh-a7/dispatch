@@ -67,6 +67,22 @@ func (r *Reaper) Run(stop <-chan struct{}) {
 }
 
 func (r *Reaper) sweep() {
+	r.sweepDeadWorkers()
+
+	// Jobs waiting on a prerequisite that has already failed will never
+	// become runnable, so fail them rather than leaving them queued.
+	for _, j := range r.store.SweepBlockedJobs() {
+		log.Printf("reaper: failing job %s, a dependency did not succeed", j.ID)
+		r.notifier.JobFinished(j)
+	}
+
+	// Recurring series that have gone quiet get their next run queued.
+	// Deliberately silent: queueing the next run is routine bookkeeping,
+	// and logging every tick of an hourly job would drown the log.
+	r.store.SweepRecurringJobs()
+}
+
+func (r *Reaper) sweepDeadWorkers() {
 	now := time.Now().UTC()
 
 	deadWorkers := make(map[string]bool)

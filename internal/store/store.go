@@ -25,6 +25,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aneesh/dispatch/internal/idgen"
 	"github.com/aneesh/dispatch/internal/types"
 )
 
@@ -248,6 +249,42 @@ func (s *Store) usedByWorkerLocked(workerID string) types.Resources {
 	return used
 }
 
+// dependencyStateLocked reports how a job's prerequisites are doing:
+// ready when every dependency has succeeded, doomed when at least one has
+// finished as something other than succeeded (so waiting is pointless).
+// A dependency that no longer exists counts as doomed rather than
+// satisfied, since silently running a job whose prerequisite vanished is
+// the more dangerous of the two guesses. Callers must hold s.mu.
+func (s *Store) dependencyStateLocked(j *types.Job) (ready, doomed bool) {
+	for _, id := range j.DependsOn {
+		dep, ok := s.jobs[id]
+		if !ok {
+			return false, true
+		}
+		if dep.Status == types.JobSucceeded {
+			continue
+		}
+		if dep.Status.Terminal() {
+			return false, true
+		}
+		return false, false // still pending or running: wait
+	}
+	return true, false
+}
+
+// leasableLocked reports whether a pending job is allowed to run now.
+// Callers must hold s.mu.
+func (s *Store) leasableLocked(j *types.Job, now time.Time) bool {
+	if j.Status != types.JobPending {
+		return false
+	}
+	if j.NotBefore != nil && now.Before(*j.NotBefore) {
+		return false // scheduled for later
+	}
+	ready, _ := s.dependencyStateLocked(j)
+	return ready
+}
+
 // LeaseNextJob atomically finds the highest-priority, oldest pending job
 // that fits the worker's free capacity, marks it running and assigned to
 // workerID, persists that transition, and returns it. Doing the "find +
@@ -259,6 +296,9 @@ func (s *Store) usedByWorkerLocked(workerID string) types.Resources {
 // a worker with enough free CPU and memory for it. If the worker is not
 // known to the store (which only happens in direct unit tests, since the
 // API checks registration first), the capacity filter is skipped.
+//
+// A job is also skipped if it is waiting on an unfinished dependency or
+// on its scheduled start time.
 func (s *Store) LeaseNextJob(workerID string) (*types.Job, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -269,9 +309,10 @@ func (s *Store) LeaseNextJob(workerID string) (*types.Job, bool) {
 		avail = worker.Capacity.Minus(s.usedByWorkerLocked(workerID))
 	}
 
+	now := time.Now().UTC()
 	var best *types.Job
 	for _, j := range s.jobs {
-		if j.Status != types.JobPending {
+		if !s.leasableLocked(j, now) {
 			continue
 		}
 		if workerKnown && !j.Resources.FitsWithin(avail) {
@@ -287,7 +328,6 @@ func (s *Store) LeaseNextJob(workerID string) (*types.Job, bool) {
 		return nil, false
 	}
 
-	now := time.Now().UTC()
 	updated := *best
 	updated.Status = types.JobRunning
 	updated.WorkerID = workerID
@@ -301,6 +341,138 @@ func (s *Store) LeaseNextJob(workerID string) (*types.Job, bool) {
 	}
 	cp := updated
 	return &cp, true
+}
+
+// JobExists reports whether a job ID is known. The API uses it to reject
+// a dependency on a job that was never submitted, which is also what
+// guarantees the dependency graph stays acyclic: you can only depend on
+// something that already exists, and something that already exists cannot
+// come to depend on you.
+func (s *Store) JobExists(id string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	_, ok := s.jobs[id]
+	return ok
+}
+
+// SweepBlockedJobs fails every pending job whose dependencies can no
+// longer all succeed, and returns the jobs it changed so the caller can
+// notify on them. Without this a job whose prerequisite failed would sit
+// pending forever, which looks identical to "queued behind a busy worker"
+// from the outside and is much more annoying to diagnose.
+func (s *Store) SweepBlockedJobs() []*types.Job {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now().UTC()
+	var changed []*types.Job
+	for _, j := range s.jobs {
+		if j.Status != types.JobPending {
+			continue
+		}
+		if _, doomed := s.dependencyStateLocked(j); !doomed {
+			continue
+		}
+		updated := *j
+		updated.Status = types.JobFailed
+		updated.Error = "a dependency did not succeed"
+		updated.UpdatedAt = now
+		updated.FinishedAt = &now
+		if err := s.append(record{Type: recJobUpsert, Job: &updated}); err != nil {
+			continue // try again on the next sweep
+		}
+		cp := updated
+		changed = append(changed, &cp)
+	}
+	return changed
+}
+
+// SweepRecurringJobs queues the next run of any recurring series that has
+// gone quiet, and returns whatever it created.
+//
+// Deciding "is another run due?" from the current state of the series,
+// rather than from a timer set when the last run finished, is what makes
+// this safe across a control plane restart: the schedule lives in the WAL
+// like everything else, so a process that was down for an hour picks up
+// exactly where it should instead of losing the series.
+func (s *Store) SweepRecurringJobs() []*types.Job {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Group the series first. A series is identified by SeriesID, which
+	// every run of the same recurring job shares.
+	type seriesState struct {
+		active bool // a run is pending or in flight, so nothing is due
+		latest *types.Job
+	}
+	series := map[string]*seriesState{}
+	for _, j := range s.jobs {
+		if j.SeriesID == "" {
+			continue
+		}
+		st := series[j.SeriesID]
+		if st == nil {
+			st = &seriesState{}
+			series[j.SeriesID] = st
+		}
+		if j.Status == types.JobPending || j.Status == types.JobRunning {
+			st.active = true
+			continue
+		}
+		if st.latest == nil || j.CreatedAt.After(st.latest.CreatedAt) {
+			st.latest = j
+		}
+	}
+
+	now := time.Now().UTC()
+	var created []*types.Job
+	for _, st := range series {
+		if st.active || st.latest == nil {
+			continue
+		}
+		last := st.latest
+		if last.Every <= 0 {
+			continue
+		}
+		// Cancelling a run ends the series. Stopping "this run" and
+		// stopping "this recurring job" are genuinely ambiguous, and of
+		// the two, a cancel that keeps firing every hour is much worse to
+		// be surprised by than one that stops too much.
+		if last.Status == types.JobCancelled {
+			continue
+		}
+
+		from := last.UpdatedAt
+		if last.FinishedAt != nil {
+			from = *last.FinishedAt
+		}
+		next := from.Add(last.Every)
+
+		run := *last
+		run.ID = idgen.New("job")
+		run.Status = types.JobPending
+		run.WorkerID = ""
+		run.Retries = 0
+		run.Output = ""
+		run.Error = ""
+		run.CancelRequested = false
+		run.StartedAt = nil
+		run.FinishedAt = nil
+		run.CreatedAt = now
+		run.UpdatedAt = now
+		run.NotBefore = &next
+		// A later run must not inherit the first run's dependencies: those
+		// named specific job IDs that have already been satisfied once and
+		// would otherwise pin every future run to ancient history.
+		run.DependsOn = nil
+
+		if err := s.append(record{Type: recJobUpsert, Job: &run}); err != nil {
+			continue // try again on the next sweep
+		}
+		cp := run
+		created = append(created, &cp)
+	}
+	return created
 }
 
 // --- Worker operations -------------------------------------------------

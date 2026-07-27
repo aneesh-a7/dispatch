@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/aneesh/dispatch/internal/client"
@@ -66,7 +67,18 @@ func cmdSubmit(c *client.Client, args []string) {
 	cpu := fs.Int("cpu", 0, "CPU units this job needs (0 means unconstrained)")
 	memory := fs.Int("memory", 0, "memory this job needs in MB (0 means unconstrained)")
 	webhook := fs.String("webhook", "", "POST this job's result here when it finishes, overriding the control plane's default")
+	every := fs.Duration("every", 0, "re-run this job repeatedly, waiting this long after each run finishes (e.g. 1h)")
+	after := fs.String("after", "", "comma-separated job IDs that must succeed before this job runs")
 	fs.Parse(args)
+
+	var dependsOn []string
+	if *after != "" {
+		for _, id := range strings.Split(*after, ",") {
+			if id = strings.TrimSpace(id); id != "" {
+				dependsOn = append(dependsOn, id)
+			}
+		}
+	}
 
 	rest := fs.Args()
 	if len(rest) < 1 {
@@ -81,9 +93,17 @@ func cmdSubmit(c *client.Client, args []string) {
 		MaxRetries: *retries,
 		Resources:  types.Resources{CPU: *cpu, Memory: *memory},
 		WebhookURL: *webhook,
+		DependsOn:  dependsOn,
+		Every:      *every,
 	})
 	fatalIf(err)
 	fmt.Printf("submitted job %s (status: %s)\n", job.ID, job.Status)
+	if job.Every > 0 {
+		fmt.Printf("  recurring: next run queued %s after each finish\n", job.Every)
+	}
+	if len(job.DependsOn) > 0 {
+		fmt.Printf("  waiting on: %s\n", strings.Join(job.DependsOn, ", "))
+	}
 }
 
 func cmdCancel(c *client.Client, args []string) {

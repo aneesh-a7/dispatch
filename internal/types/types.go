@@ -81,6 +81,35 @@ type Job struct {
 	// places for different work. Empty means "use the default, if any".
 	WebhookURL string `json:"webhook_url,omitempty"`
 
+	// DependsOn lists job IDs that must succeed before this job may be
+	// leased. Dependencies can only name jobs that already exist when
+	// this one is submitted, which makes a cycle impossible to express:
+	// the graph is a DAG by construction rather than by validation.
+	//
+	// If any dependency reaches a terminal state other than succeeded,
+	// this job is failed rather than left pending forever.
+	DependsOn []string `json:"depends_on,omitempty"`
+
+	// NotBefore holds a job in the queue until the clock passes it. It is
+	// how a recurring job's next run waits for its interval without a
+	// separate timer or a goroutine per job.
+	NotBefore *time.Time `json:"not_before,omitempty"`
+
+	// Every, when non-zero, makes this job recurring: once it finishes,
+	// the control plane queues the next run this long afterwards.
+	//
+	// The interval is measured from the previous run *finishing*, not
+	// from when it started. That sidesteps the whole class of problems
+	// where a run outlives its own interval: there is never more than one
+	// run of a series queued or running at a time, so a job that
+	// occasionally takes longer than expected falls behind schedule
+	// instead of piling up copies of itself.
+	Every time.Duration `json:"every,omitempty"`
+
+	// SeriesID ties the runs of one recurring job together. The first run
+	// uses its own ID; every later run inherits it.
+	SeriesID string `json:"series_id,omitempty"`
+
 	Output string `json:"output,omitempty"`
 	Error  string `json:"error,omitempty"`
 

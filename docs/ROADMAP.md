@@ -148,6 +148,43 @@ cancelled), the control plane POSTs the job's JSON to a configured URL:
   of retyped into a command line each time, which is the kind of thing I
   only appreciated after doing it by hand one too many times.
 
+## Round two: workflows (done)
+
+With the deployment gaps closed, the next thing standing between dispatch
+and actual daily use was that it could only run one command, once, on a
+machine whose capacity I'd typed in by hand. Three additions, all shipped:
+
+### Job dependencies (done)
+
+`-after id1,id2` holds a job until those jobs succeed. A prerequisite
+that fails or is cancelled fails its dependents rather than stranding
+them in the queue.
+
+The design note worth keeping: dependencies may only name jobs that
+already exist, so a cycle is impossible to express and there's no cycle
+detection to write. That fell out of the input validation I wanted
+anyway, which is the good kind of accident. Resolution lives in the
+reaper's sweep so that one implementation covers every way a prerequisite
+can end.
+
+### Recurring jobs (done)
+
+`-every 1h` re-runs a job indefinitely, each run a separate job sharing a
+`series_id`. The interval runs from the previous run finishing, which
+makes overlapping runs structurally impossible instead of something to
+handle. Whether a run is due is derived from the series' own durable
+records rather than a timer, so restarts don't lose schedules and the
+sweep can't double-queue.
+
+Failing keeps the series going; cancelling ends it.
+
+### Auto-detected worker capacity (done)
+
+Workers measure their own CPU and memory at startup. Per-platform,
+stdlib-only, behind build tags, with an honest "couldn't detect, using
+the default" path for platforms without an implementation. Explicit
+flags always win.
+
 ## Backlog: real ideas, not yet scheduled
 
 Each of these is a legitimate next step after the above, listed with what
@@ -169,21 +206,6 @@ near-term plan.
   single-node control plane with auth and TLS already covers "a small
   group running real workloads," just not "zero-downtime through a node
   failure."
-- **Scheduled/recurring jobs.** A `-every 1h` (or cron-expression) flag on
-  submit that resubmits a job on a schedule instead of once. Natural
-  extension of "kick off work and forget about it"; mostly a scheduler
-  and store change (a job template plus a next-run timestamp), not a new
-  subsystem.
-- **Job dependencies / simple DAGs.** Let job B declare it depends on job
-  A and only become eligible to lease once A succeeds. Turns dispatch
-  from "run one command" into "run a pipeline," which is a meaningfully
-  different (and more useful) tool. It's the idea I keep circling back
-  to, half because it's genuinely useful and half because it sounds like
-  a fun way to break my own scheduler in new and educational ways. It
-  touches the scheduler's core leasing logic and needs real thought
-  about what happens when a dependency fails or is cancelled, so it's
-  staying a backlog item until I've thought that through properly rather
-  than just wanted to build it.
 - **Live output streaming.** Right now the worker buffers a job's
   combined stdout/stderr with `cmd.CombinedOutput()` and only reports it
   once the process exits, so `dispatchctl status` shows nothing useful
@@ -196,12 +218,17 @@ near-term plan.
   processes that die when the terminal closes. Pure packaging, no code
   changes, but real friction removed for anyone running this
   unattended.
-- **Auto-detected worker capacity.** Read actual CPU core count and
-  available RAM at startup (`runtime.NumCPU()`, and a small amount of
-  platform-specific memory detection) as the default for `-cpu`/
-  `-memory`, with the existing flags still available to override. Removes
-  a step that's easy to get wrong (a worker that overstates its own
-  capacity will still get bin-packed as if it had it).
+- **Cron-expression schedules.** `-every` takes a duration, which covers
+  "run this periodically" but not "run this at 3am on weekdays." A real
+  cron parser is a self-contained addition (the scheduling machinery it
+  would feed already exists), but it's only worth it once I actually want
+  a wall-clock schedule, and so far I haven't.
+- **Stopping a recurring series outright.** Today you stop one by
+  cancelling the run that's waiting between executions. That works, but
+  cancelling mid-execution races the job, and there's no single "stop
+  this series" verb. A `dispatchctl cancel -series <id>` would be
+  unambiguous. Small, and worth doing the first time the current
+  behaviour actually annoys me.
 - **Per-client rate limiting / quotas.** Only starts to matter once one
   control plane is shared by more than a couple of trusted people. Not
   worth building until the auth work above surfaces an actual need for

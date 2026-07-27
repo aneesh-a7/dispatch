@@ -129,6 +129,88 @@ This reuses the existing pull model rather than adding a push channel. It
 costs a little latency (bounded by the worker's cancel-poll interval),
 the same trade already made for leasing.
 
+### Job dependencies
+
+A job can name jobs that must succeed before it runs. Leasing skips
+anything whose prerequisites aren't all `succeeded` yet, so a waiting job
+costs nothing while it waits: it isn't holding a worker, it just isn't
+eligible.
+
+The part I'm happiest with is what the API rejects. A dependency must
+name a job that already exists, which means a job can only ever depend on
+its own past. That makes a cycle unrepresentable rather than merely
+detected: there is no cycle checker in this codebase because there is
+nowhere for a cycle to come from. I started out planning to write a
+depth-first cycle detector and realized partway through that the
+validation I already wanted for typos had made it dead code.
+
+The other half is what happens when a prerequisite fails. Leasing alone
+would leave the dependent job pending forever, which from the outside
+looks exactly like "queued behind busy workers" and is miserable to
+diagnose. So the reaper sweeps for jobs whose dependencies can no longer
+all succeed and fails them with a reason attached. Putting it in the
+reaper rather than in the completion handler means one implementation
+covers every way a prerequisite can end, including the reaper failing it
+after a worker died.
+
+A missing dependency counts as failed rather than satisfied. Of the two
+ways to be wrong about a prerequisite that vanished, running the job
+anyway is the one that can do damage.
+
+### Recurring jobs
+
+`Every` on a job makes it a series. Once no run of that series is queued
+or in flight, the reaper's sweep queues the next one with a `NotBefore`
+of the last run's finish plus the interval, and leasing refuses to touch
+a job before its `NotBefore`.
+
+Two decisions worth spelling out:
+
+**The interval runs from finish, not from start.** This is the difference
+between "every hour" and "an hour after each run ends," and picking the
+second one deletes an entire category of problem: a run can never overlap
+its own successor, so a job that usually takes 5 minutes and occasionally
+takes 90 cannot pile up copies of itself while you aren't looking. It
+falls behind schedule instead, which is the failure mode you can actually
+notice and reason about. Wall-clock scheduling is the more familiar
+model, but it comes with "what do I do if the previous run is still
+going?" and every answer to that is worse than not having the question.
+
+**Whether the next run is due is derived from the series, not from a
+timer.** There's no goroutine per recurring job and nothing in memory
+that a restart could lose. The sweep reads the same durable job records
+everything else reads, which means a control plane that was down for an
+hour comes back and picks the series up correctly instead of dropping it.
+It also makes the sweep naturally idempotent: the run it just queued is
+itself the evidence that the series is active, so running the sweep twice
+cannot double-queue.
+
+Failing doesn't stop a series (cron doesn't stop either, and a backup job
+that silently gave up the first time it errored would be worse than no
+backup job). Cancelling does. "Stop this run" and "stop this recurring
+job" are genuinely ambiguous, and between the two, a cancel that keeps
+firing every hour is a much worse surprise than one that stops too much.
+
+### Worker capacity detection
+
+Workers measure their own CPU and memory at startup instead of defaulting
+to numbers I picked. The scheduler bin-packs against whatever a worker
+claims, so a wrong number is quietly expensive in both directions: too
+high and jobs get packed onto a machine that can't hold them, too low and
+the machine sits half-idle while work queues. Neither announces itself.
+
+`runtime.NumCPU` handles cores everywhere and already respects affinity
+and container limits. Memory is per-platform (`/proc/meminfo`,
+`GlobalMemoryStatusEx`, `sysctl hw.memsize`) behind build tags, all
+stdlib so the release builds keep cross-compiling from one runner with
+nothing installed. A platform without an implementation returns "don't
+know" and the worker falls back to a documented default and says so in
+the log, rather than inventing a number.
+
+Explicitly-set values are never overridden. Capping a machine you're also
+using yourself is a real thing to want, and auto-detection that argues
+with you about it is worse than none.
+
 ### Metrics
 
 `/metrics` is plain Prometheus text, no client library. Beyond status

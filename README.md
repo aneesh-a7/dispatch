@@ -90,6 +90,48 @@ Multiple workers can be started against the same control plane. Jobs are
 leased to whichever worker has free capacity, one at a time per worker,
 with no double-dispatch (see `Store.LeaseNextJob`).
 
+## Chaining jobs and repeating them
+
+Two flags cover most of what turns a pile of one-off commands into
+something resembling a workflow.
+
+`-after` holds a job until the jobs it names have succeeded:
+
+```bash
+FETCH=$(dispatchctl submit -- ./fetch-data.sh | grep -o 'job_[^ ]*')
+dispatchctl submit -after "$FETCH" -- ./transform.sh
+```
+
+A job can wait on several (`-after id1,id2`), and a waiting job doesn't
+occupy a worker while it waits. If any prerequisite ends up failed or
+cancelled, the dependent job is failed too, with an error saying why,
+rather than sitting in the queue forever looking like it's just being
+patient.
+
+You can only depend on a job that already exists, which is a small
+restriction with a nice consequence: it makes a dependency cycle
+impossible to express in the first place, so there's no cycle detector to
+get wrong.
+
+`-every` re-runs a job forever:
+
+```bash
+dispatchctl submit -every 1h -- ./sync-backups.sh
+```
+
+The interval is measured from when the previous run *finishes*, not from
+when it started, so a run that occasionally takes longer than its
+interval falls behind rather than overlapping with itself. Each run is a
+separate job with its own ID, output, and history, all sharing a
+`series_id`. A failed run doesn't stop the schedule (the next one is
+still queued, same as cron), but cancelling one does.
+
+Since a run is only cancellable while it exists, the reliable way to stop
+a recurring job is to cancel it while it's waiting between runs. Cancel
+it mid-execution and you're racing the job: if it finishes before its
+worker notices the cancellation, that run succeeded and the series
+carries on.
+
 ## Getting told when a job finishes
 
 The whole reason this project exists is to stop babysitting a terminal,
@@ -196,11 +238,24 @@ nothing that was ever acknowledged to a caller.
 
 ## Resource-aware scheduling and cancellation
 
-Jobs can declare a CPU/memory request and workers advertise a capacity
-(`-cpu`, `-memory`). Leasing is bin-packing: a job only goes to a worker
-with enough room for it, and a worker's free capacity is tracked as its
-running jobs consume and release it. A job left at the default (zero)
-fits anywhere and consumes nothing, so this stays opt-in.
+Jobs can declare a CPU/memory request and workers advertise a capacity.
+Leasing is bin-packing: a job only goes to a worker with enough room for
+it, and a worker's free capacity is tracked as its running jobs consume
+and release it. A job left at the default (zero) fits anywhere and
+consumes nothing, so this stays opt-in.
+
+Workers measure their own capacity at startup, so `-cpu` and `-memory`
+are only worth setting when you want to hold part of a machine back:
+
+```
+worker: detected 14 CPUs
+worker: detected 32188 MB of memory
+```
+
+Anything you set explicitly is left alone, which is the point: telling a
+16-core desktop to only advertise 4 cores because you're also using it is
+a legitimate thing to want, and auto-detection shouldn't quietly override
+you.
 
 Cancel a job with `dispatchctl cancel <job-id>`, the dashboard, or
 `DELETE /v1/jobs/{id}`. A pending job is dropped immediately; a running
@@ -223,7 +278,8 @@ go run ./cmd/loadtest -n 500          # submits 500 jobs, reports jobs/sec + p50
 ```
 dispatchctl [-control-plane URL] [-token TOKEN] <command>
 
-  submit [-priority N] [-retries N] [-cpu N] [-memory MB] [-webhook URL] <command> [args...]
+  submit [-priority N] [-retries N] [-cpu N] [-memory MB] [-webhook URL]
+         [-after id1,id2] [-every 1h] <command> [args...]
   status <job-id>
   cancel <job-id>
   list
@@ -245,6 +301,7 @@ internal/
   client/         typed HTTP client (shared by worker + CLI)
   notify/         job-finished webhook delivery
   config/         optional JSON config files
+  sysinfo/        per-platform CPU/memory detection for worker capacity
   idgen/          stdlib-only sortable ID generation
   webui/          embedded live dashboard (static HTML/CSS/JS, served by the control plane)
 docs/
@@ -256,8 +313,9 @@ docs/
 
 Built and tested end to end: a durable control plane with WAL compaction,
 pull-based workers, priority + resource-aware (bin-packing) leasing,
-retries, dead-worker reaping, job cancellation, bearer-token auth, TLS,
-job-finished webhooks, JSON config files, Prometheus metrics, a load-test
+job dependencies, recurring jobs, retries, dead-worker reaping, job
+cancellation, bearer-token auth, TLS, job-finished webhooks, JSON config
+files, auto-detected worker capacity, Prometheus metrics, a load-test
 tool, and a live sprite dashboard.
 
 Still deliberately out of scope: sandboxed execution (jobs run as plain

@@ -101,6 +101,8 @@ type submitJobRequest struct {
 	MaxRetries int             `json:"max_retries"`
 	Resources  types.Resources `json:"resources"`
 	WebhookURL string          `json:"webhook_url"`
+	DependsOn  []string        `json:"depends_on"`
+	Every      time.Duration   `json:"every"`
 }
 
 type registerWorkerRequest struct {
@@ -141,6 +143,19 @@ func (s *Server) handleSubmitJob(w http.ResponseWriter, r *http.Request) {
 	if req.Resources.Memory < 0 {
 		req.Resources.Memory = 0
 	}
+	if req.Every < 0 {
+		writeError(w, http.StatusBadRequest, "every must not be negative")
+		return
+	}
+	// Every dependency has to already exist. Rejecting unknown IDs is what
+	// keeps the graph acyclic (a job can only depend on its past), and it
+	// also catches the ordinary typo before the job sits queued forever.
+	for _, dep := range req.DependsOn {
+		if !s.store.JobExists(dep) {
+			writeError(w, http.StatusBadRequest, "unknown dependency: "+dep)
+			return
+		}
+	}
 
 	now := time.Now().UTC()
 	job := &types.Job{
@@ -151,9 +166,15 @@ func (s *Server) handleSubmitJob(w http.ResponseWriter, r *http.Request) {
 		Resources:  req.Resources,
 		MaxRetries: req.MaxRetries,
 		WebhookURL: req.WebhookURL,
+		DependsOn:  req.DependsOn,
+		Every:      req.Every,
 		Status:     types.JobPending,
 		CreatedAt:  now,
 		UpdatedAt:  now,
+	}
+	// A recurring job is the first run of its own series.
+	if job.Every > 0 {
+		job.SeriesID = job.ID
 	}
 	if err := s.store.CreateJob(job); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to persist job: "+err.Error())

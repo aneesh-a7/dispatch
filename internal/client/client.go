@@ -87,6 +87,8 @@ type SubmitJobRequest struct {
 	MaxRetries int             `json:"max_retries"`
 	Resources  types.Resources `json:"resources"`
 	WebhookURL string          `json:"webhook_url,omitempty"`
+	DependsOn  []string        `json:"depends_on,omitempty"`
+	Every      time.Duration   `json:"every,omitempty"`
 }
 
 func (c *Client) SubmitJob(req SubmitJobRequest) (*types.Job, error) {
