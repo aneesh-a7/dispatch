@@ -1,4 +1,10 @@
 bin/
 data/
 *.wal
+*.snapshot
 .DS_Store
+
+# Local editor/tooling state
+.agents/
+.claude/
+skills-lock.json

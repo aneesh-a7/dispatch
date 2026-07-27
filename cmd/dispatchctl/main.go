@@ -17,6 +17,7 @@ import (
 
 func main() {
 	controlPlaneURL := flag.String("control-plane", envOr("DISPATCH_ADDR", "http://localhost:8080"), "control plane base URL")
+	token := flag.String("token", os.Getenv("DISPATCH_TOKEN"), "bearer token, if the control plane requires auth (or $DISPATCH_TOKEN)")
 	flag.Parse()
 
 	args := flag.Args()
@@ -25,7 +26,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	c := client.New(*controlPlaneURL)
+	c := client.New(*controlPlaneURL).WithToken(*token)
 
 	switch args[0] {
 	case "submit":
@@ -46,14 +47,16 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `dispatchctl - control a dispatch cluster
 
 Usage:
-  dispatchctl submit [-priority N] [-retries N] [-cpu N] [-memory MB] <command> [args...]
+  dispatchctl submit [-priority N] [-retries N] [-cpu N] [-memory MB] [-webhook URL] <command> [args...]
   dispatchctl status <job-id>
   dispatchctl cancel <job-id>
   dispatchctl list
 
 Flags (global):
   -control-plane   control plane base URL (default http://localhost:8080,
-                    or $DISPATCH_ADDR)`)
+                    or $DISPATCH_ADDR)
+  -token           bearer token, if the control plane requires auth
+                    (or $DISPATCH_TOKEN)`)
 }
 
 func cmdSubmit(c *client.Client, args []string) {
@@ -62,6 +65,7 @@ func cmdSubmit(c *client.Client, args []string) {
 	retries := fs.Int("retries", 0, "max retries on failure")
 	cpu := fs.Int("cpu", 0, "CPU units this job needs (0 means unconstrained)")
 	memory := fs.Int("memory", 0, "memory this job needs in MB (0 means unconstrained)")
+	webhook := fs.String("webhook", "", "POST this job's result here when it finishes, overriding the control plane's default")
 	fs.Parse(args)
 
 	rest := fs.Args()
@@ -76,6 +80,7 @@ func cmdSubmit(c *client.Client, args []string) {
 		Priority:   *priority,
 		MaxRetries: *retries,
 		Resources:  types.Resources{CPU: *cpu, Memory: *memory},
+		WebhookURL: *webhook,
 	})
 	fatalIf(err)
 	fmt.Printf("submitted job %s (status: %s)\n", job.ID, job.Status)

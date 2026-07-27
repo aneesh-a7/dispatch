@@ -16,6 +16,7 @@ import (
 
 type Client struct {
 	baseURL string
+	token   string
 	http    *http.Client
 }
 
@@ -24,6 +25,14 @@ func New(baseURL string) *Client {
 		baseURL: baseURL,
 		http:    &http.Client{Timeout: 10 * time.Second},
 	}
+}
+
+// WithToken returns a client that presents token as a bearer credential
+// on every request. An empty token leaves requests unauthenticated, which
+// is what a control plane running without auth expects.
+func (c *Client) WithToken(token string) *Client {
+	c.token = token
+	return c
 }
 
 func (c *Client) do(method, path string, body, out any) error {
@@ -42,6 +51,9 @@ func (c *Client) do(method, path string, body, out any) error {
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
 
 	resp, err := c.http.Do(req)
@@ -74,6 +86,7 @@ type SubmitJobRequest struct {
 	Priority   int             `json:"priority"`
 	MaxRetries int             `json:"max_retries"`
 	Resources  types.Resources `json:"resources"`
+	WebhookURL string          `json:"webhook_url,omitempty"`
 }
 
 func (c *Client) SubmitJob(req SubmitJobRequest) (*types.Job, error) {

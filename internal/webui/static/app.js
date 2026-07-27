@@ -58,8 +58,46 @@ function resLabel(res) {
   return `${res.cpu || 0}cpu/${res.memory || 0}mb`;
 }
 
+// --- auth ----------------------------------------------------------------
+//
+// The control plane may require a bearer token. It is kept in localStorage
+// so a reload does not ask again, and attached to every request from here.
+// A 401 clears it and re-prompts, which also covers the token being
+// changed on the server.
+
+const TOKEN_KEY = "dispatch.token";
+
+function getToken() {
+  return localStorage.getItem(TOKEN_KEY) || "";
+}
+
+function promptForToken(message) {
+  const entered = window.prompt(message || "This control plane requires a token:");
+  if (entered === null) return false;
+  localStorage.setItem(TOKEN_KEY, entered.trim());
+  return true;
+}
+
+// authFetch adds the token header and turns a 401 into a prompt-and-retry.
+function authFetch(path, opts = {}) {
+  const token = getToken();
+  const headers = new Headers(opts.headers || {});
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  return fetch(path, { ...opts, headers }).then((res) => {
+    if (res.status !== 401) return res;
+    localStorage.removeItem(TOKEN_KEY);
+    const again = promptForToken(
+      token ? "Token rejected. Enter the control plane token:" : "This control plane requires a token:"
+    );
+    if (!again) return res;
+    const retryHeaders = new Headers(opts.headers || {});
+    retryHeaders.set("Authorization", `Bearer ${getToken()}`);
+    return fetch(path, { ...opts, headers: retryHeaders });
+  });
+}
+
 async function fetchJSON(path) {
-  const res = await fetch(path);
+  const res = await authFetch(path);
   if (!res.ok) throw new Error(`${path}: ${res.status}`);
   if (res.status === 204) return [];
   return res.json();
@@ -67,7 +105,7 @@ async function fetchJSON(path) {
 
 async function cancelJob(id) {
   try {
-    const res = await fetch(`/v1/jobs/${id}`, { method: "DELETE" });
+    const res = await authFetch(`/v1/jobs/${id}`, { method: "DELETE" });
     if (!res.ok && res.status !== 409) {
       const body = await res.json().catch(() => ({}));
       throw new Error(body.error || `status ${res.status}`);
@@ -458,7 +496,15 @@ els.addWorker.addEventListener("click", async () => {
   els.addWorker.disabled = true;
   els.addWorker.textContent = "opening terminal...";
   try {
-    const res = await fetch("/v1/dev/spawn-worker", { method: "POST" });
+    const res = await authFetch("/v1/dev/spawn-worker", { method: "POST" });
+    if (res.status === 404) {
+      // The control plane runs with auth on, which removes this route:
+      // spawning a process on the host only makes sense when the browser
+      // and the control plane are the same machine. Retire the button.
+      els.addWorker.remove();
+      els.clusterHint.textContent = "(start workers with: dispatch-worker -token ...)";
+      return;
+    }
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
       throw new Error(body.error || `status ${res.status}`);
@@ -489,7 +535,7 @@ els.form.addEventListener("submit", async (e) => {
   els.feedback.className = "feedback";
 
   try {
-    const res = await fetch("/v1/jobs", {
+    const res = await authFetch("/v1/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

@@ -1,0 +1,219 @@
+# Roadmap: making dispatch usable by someone other than its author
+
+Everything in the "current state" section of `docs/ARCHITECTURE.md` was
+built and tested with one person and a handful of machines they control
+directly, all on a trusted network, all started by hand. That covers the
+original problem (stop SSHing into whichever laptop is free). It does not
+cover the next one: someone else running dispatch across their own
+machines, possibly one of which is a rented server reachable from the
+open internet, without babysitting a terminal to find out when a job
+finishes.
+
+This document lays out what's missing to close that gap, in the order
+it's worth building it, plus a longer backlog of ideas that are real but
+not urgent. It complements `docs/ARCHITECTURE.md` rather than replacing
+it: that file explains what exists and why; this one explains what's next
+and why it's next.
+
+## What actually stops someone else from using this today
+
+Five concrete gaps, not vague ones:
+
+1. **No auth.** Any client that can reach the control plane's port can
+   submit jobs (arbitrary shell commands, executed on someone's worker),
+   list everything, and cancel anything. Fine on localhost or a home LAN
+   you fully trust. Not fine the moment the control plane is reachable
+   from anywhere else, which is required for "a friend's machine" or "a
+   rented VPS" to participate.
+2. **No TLS.** Even once there's a token, plain HTTP means that token
+   (and job output, which might contain anything the job printed) travels
+   in the clear if the control plane is ever exposed past localhost.
+3. **No prebuilt binaries.** The only way to run dispatch right now is
+   `go run` from a source checkout. That's a nonstarter for someone who
+   doesn't already have Go installed and doesn't want to.
+4. **No way to find out a job finished without checking.** This is the
+   one that matters most: the entire premise of this project is "stop
+   babysitting terminals." The dashboard and `dispatchctl status` still
+   require you to go look. Nothing pushes a "job 4821 finished" signal
+   back to you. Until that exists, the core problem isn't actually solved
+   once you close the laptop.
+5. **No config file.** Flags are fine for one worker. They get brittle
+   fast once there are several workers with different capacities and
+   tokens to keep straight, especially across restarts.
+
+## Build order
+
+**Status: all five phases below are built, tested, and shipped.** What
+follows is kept as the record of what was decided and why, since the
+reasoning outlives the checkbox. The backlog after it is what remains.
+
+### 1. Auth (done; do this first, everything else assumes it exists)
+
+A shared bearer token, checked by middleware in front of the existing
+`http.ServeMux`, opt-in so nothing breaks for the current single-user
+localhost workflow:
+
+- `-token` flag / `DISPATCH_TOKEN` env var on the control plane. If unset,
+  behavior is unchanged (no auth, same as today).
+- Every route except `GET /healthz` requires
+  `Authorization: Bearer <token>` when a token is configured.
+  `/healthz` stays open so a load balancer or uptime check doesn't need
+  credentials.
+- Compare with `subtle.ConstantTimeCompare`, not `==`. A string equality
+  check leaks timing information proportional to how many leading bytes
+  match, which is a real (if narrow) attack surface for anything guessing
+  a shared secret over a network.
+- `internal/client` gains a token field, sends the header on every
+  request. Worker and `dispatchctl` both get a `-token`/`DISPATCH_TOKEN`
+  flag that just gets threaded through to the client.
+- The dashboard prompts for a token once (if the control plane returns
+  401), stores it in `localStorage`, and attaches it to every fetch.
+- `POST /v1/dev/spawn-worker` (the dashboard's "Add worker" button, which
+  opens a local terminal running `go run ./cmd/worker`) is a local
+  convenience that should never be reachable from anything but the
+  machine running the control plane. Once a token is configured, disable
+  this route outright rather than just gating it behind the token, since
+  spawning a process on the host is a different risk class than the rest
+  of the API.
+
+Deliberately out of scope for this pass: per-worker or per-user tokens,
+a token-issuing/rotation flow, roles or permissions. One shared secret
+matches the actual shape of the problem (a small group of trusted
+machines/people), and a token-management system is not worth building
+before anyone has asked for it.
+
+### 2. Distribution (done)
+
+- A GitHub Actions workflow that builds `linux/darwin/windows` x
+  `amd64/arm64` binaries on tag push and attaches them to a GitHub
+  Release. Pure `go build` with `GOOS`/`GOARCH` set, no cross-compilation
+  toolchain needed since this has zero cgo dependencies.
+- Rewrite the README quickstart around downloading a release binary as
+  the primary path, with `go run` kept as the "building from source"
+  alternative underneath.
+- No install script for now. (Notably: don't repeat the `curl | sh`
+  pattern seen elsewhere for this project's own releases either. A
+  `Copy-Item`/`tar -xzf` + "put it on your PATH" instruction is a couple
+  more lines in the README and doesn't ask anyone to pipe a downloaded
+  script into a shell.)
+
+### 3. Webhooks on job completion (done)
+
+The actual fix for gap #4. When a job reaches a terminal state
+(succeeded, failed, or cancelled), the control plane POSTs the job's JSON
+to a configured URL:
+
+- `-webhook-url` flag / `DISPATCH_WEBHOOK_URL` env on the control plane
+  sets a default applied to every job.
+- Optional per-job `webhook_url` field on submit overrides the default,
+  so one control plane can notify different places for different jobs.
+- Fired from a goroutine, not inline in the completion handler: a slow or
+  dead receiver must never stall `handleCompleteJob` or block the
+  scheduler. A couple of retries with a short timeout, then give up and
+  log; the job's status is still recorded correctly either way, the
+  webhook is a notification, not part of the durability story.
+- No signature/HMAC verification in the first pass (there's no secret
+  exchange story yet without more auth machinery than is justified here);
+  document plainly that anyone pointing this at a public endpoint should
+  treat the payload as untrusted-source-adjacent on the receiving end.
+- This is deliberately just an HTTP POST rather than baked-in Slack/
+  Discord/email integrations: a webhook URL is the universal primitive,
+  and Discord/Slack both accept a plain POST to a webhook URL directly,
+  so no per-service client code is needed to get real notifications
+  working.
+
+### 4. TLS (done)
+
+- `-tls-cert` / `-tls-key` flags on the control plane, using stdlib
+  `http.ListenAndServeTLS` (zero new dependencies).
+- Document two paths in the README: a self-signed cert for testing
+  (`go run` snippet using `crypto/tls`'s cert generation, or plain
+  `openssl req`), and, for anything actually exposed to the internet,
+  terminating TLS at a reverse proxy (Caddy or nginx) in front of
+  dispatch instead. Automatic certificate renewal is a solved problem at
+  that layer; hand-rolling ACME inside the control plane would be a lot
+  of code to duplicate something Caddy does in one line of config.
+
+### 5. Config file (done)
+
+- Optional `-config path.json` read once at startup. Plain JSON (stdlib
+  `encoding/json`, already a dependency everywhere else in this repo), no
+  new parser needed. Flags passed on the command line override values
+  from the file, so scripts that already pass flags keep working
+  unchanged.
+- Mainly useful once someone's running more than one worker: capacity,
+  token, and control-plane URL per machine, checked into a file instead
+  of retyped into a command line each time.
+
+## Backlog: real ideas, not yet scheduled
+
+Each of these is a legitimate next step after the above, listed with what
+it is, why it'd matter, and the trade-off that's kept it out of the
+near-term plan.
+
+- **Sandboxed execution.** Already flagged in `docs/ARCHITECTURE.md` as
+  the most important safety gap: jobs run as plain subprocesses with full
+  access to the worker's environment. Matters most once a control plane
+  has job submitters who aren't fully trusted (which auth alone doesn't
+  solve; auth controls who can submit, not what a submitted job can do
+  once it's running). Linux namespaces/cgroups and Windows Job Objects
+  are different enough that this is a real platform-specific undertaking,
+  not a quick add.
+- **Multi-node HA control plane.** Removes the single point of failure.
+  Needs a replicated log (Raft-style), leader election, and client
+  redirect on failover. A large, well-scoped project on its own; not
+  worth starting before the simpler gaps above are closed, since a
+  single-node control plane with auth and TLS already covers "a small
+  group running real workloads," just not "zero-downtime through a node
+  failure."
+- **Scheduled/recurring jobs.** A `-every 1h` (or cron-expression) flag on
+  submit that resubmits a job on a schedule instead of once. Natural
+  extension of "kick off work and forget about it"; mostly a scheduler
+  and store change (a job template plus a next-run timestamp), not a new
+  subsystem.
+- **Job dependencies / simple DAGs.** Let job B declare it depends on job
+  A and only become eligible to lease once A succeeds. Turns dispatch
+  from "run one command" into "run a pipeline," which is a meaningfully
+  different (and more useful) tool, but touches the scheduler's core
+  leasing logic and needs real thought about what happens when a
+  dependency fails or is cancelled.
+- **Live output streaming.** Right now the worker buffers a job's
+  combined stdout/stderr with `cmd.CombinedOutput()` and only reports it
+  once the process exits, so `dispatchctl status` shows nothing useful
+  for a still-running job. A `dispatchctl logs -f <job-id>` needs the
+  worker to persist and expose partial output incrementally instead,
+  which is a bigger change to the execution path than it sounds.
+- **Background service wrappers.** A systemd unit file, a launchd plist,
+  and Windows service registration so the control plane and worker run
+  as managed background services instead of foreground terminal
+  processes that die when the terminal closes. Pure packaging, no code
+  changes, but real friction removed for anyone running this
+  unattended.
+- **Auto-detected worker capacity.** Read actual CPU core count and
+  available RAM at startup (`runtime.NumCPU()`, and a small amount of
+  platform-specific memory detection) as the default for `-cpu`/
+  `-memory`, with the existing flags still available to override. Removes
+  a step that's easy to get wrong (a worker that overstates its own
+  capacity will still get bin-packed as if it had it).
+- **Per-client rate limiting / quotas.** Only starts to matter once one
+  control plane is shared by more than a couple of trusted people. Not
+  worth building until the auth work above surfaces an actual need for
+  it.
+- **Job templates.** Save a common command + resources + priority
+  combination under a short name, submit by name instead of retyping the
+  full command. A CLI/store convenience, not a scheduler change.
+
+## What stays off the table
+
+Same list as `docs/ARCHITECTURE.md`, restated here because it's easy to
+lose track of once the project has more moving parts:
+
+- No SQLite/bbolt/other embedded DB. The hand-rolled WAL (now with
+  compaction) is the point of the project, not a placeholder for one.
+- No third-party HTTP router or web framework.
+- No UUID library.
+- Nothing named after Kubernetes, container orchestration, or any
+  specific employer.
+- No dependency added to solve a problem the standard library already
+  solves reasonably well (see the config file and TLS sections above:
+  both stay stdlib-only on purpose).

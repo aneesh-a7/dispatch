@@ -20,6 +20,7 @@ import (
 
 func main() {
 	controlPlaneURL := flag.String("control-plane", "http://localhost:8080", "control plane base URL")
+	token := flag.String("token", os.Getenv("DISPATCH_TOKEN"), "bearer token, if the control plane requires auth (or $DISPATCH_TOKEN)")
 	n := flag.Int("n", 200, "number of jobs to submit")
 	commandStr := flag.String("command", defaultCommand(), "command to run for each job (space-separated)")
 	priority := flag.Int("priority", 0, "priority for every submitted job")
@@ -38,7 +39,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	c := client.New(*controlPlaneURL)
+	c := client.New(*controlPlaneURL).WithToken(*token)
 
 	fmt.Printf("submitting %d jobs (%q) to %s...\n", *n, *commandStr, *controlPlaneURL)
 	ids := make(map[string]bool, *n)

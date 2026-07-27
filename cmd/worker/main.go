@@ -12,17 +12,20 @@ import (
 	"context"
 	"flag"
 	"log"
+	"os"
 	"os/exec"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/aneesh/dispatch/internal/client"
+	"github.com/aneesh/dispatch/internal/config"
 	"github.com/aneesh/dispatch/internal/types"
 )
 
 func main() {
-	controlPlaneURL := flag.String("control-plane", "http://localhost:8080", "control plane base URL")
+	controlPlaneURL := flag.String("control-plane", envOr("DISPATCH_ADDR", "http://localhost:8080"), "control plane base URL (or $DISPATCH_ADDR)")
+	token := flag.String("token", os.Getenv("DISPATCH_TOKEN"), "bearer token, if the control plane requires auth (or $DISPATCH_TOKEN)")
 	address := flag.String("address", "local", "informational address reported at registration")
 	cpu := flag.Int("cpu", 4, "CPU capacity this worker advertises (abstract units)")
 	memory := flag.Int("memory", 4096, "memory capacity this worker advertises (MB)")
@@ -30,9 +33,18 @@ func main() {
 	heartbeatInterval := flag.Duration("heartbeat-interval", 5*time.Second, "how often to heartbeat (must be well under the control plane's heartbeat-ttl)")
 	cancelPollInterval := flag.Duration("cancel-poll-interval", 1*time.Second, "how often a running job checks whether it has been cancelled")
 	jobTimeout := flag.Duration("job-timeout", 5*time.Minute, "max time a single job is allowed to run")
+	configPath := flag.String("config", "", "optional JSON config file; command-line flags override it")
 	flag.Parse()
 
-	c := client.New(*controlPlaneURL)
+	if *configPath != "" {
+		var cfg config.Worker
+		if err := config.Load(*configPath, &cfg); err != nil {
+			log.Fatalf("worker: %v", err)
+		}
+		applyWorkerConfig(cfg, controlPlaneURL, token, address, cpu, memory, pollInterval, jobTimeout)
+	}
+
+	c := client.New(*controlPlaneURL).WithToken(*token)
 
 	worker, err := c.RegisterWorker(client.RegisterWorkerRequest{
 		Address:  *address,
@@ -48,6 +60,50 @@ func main() {
 	defer close(stopHeartbeat)
 
 	pollLoop(c, worker.ID, *pollInterval, *cancelPollInterval, *jobTimeout)
+}
+
+// applyWorkerConfig fills in values from a config file for flags the user
+// did not pass explicitly, so an explicit flag always wins over the file.
+func applyWorkerConfig(cfg config.Worker, controlPlaneURL, token, address *string, cpu, memory *int,
+	pollInterval, jobTimeout *time.Duration) {
+
+	set := map[string]bool{}
+	flag.Visit(func(f *flag.Flag) { set[f.Name] = true })
+
+	if cfg.ControlPlane != nil && !set["control-plane"] {
+		*controlPlaneURL = *cfg.ControlPlane
+	}
+	if cfg.Token != nil && !set["token"] {
+		*token = *cfg.Token
+	}
+	if cfg.Address != nil && !set["address"] {
+		*address = *cfg.Address
+	}
+	if cfg.CPU != nil && !set["cpu"] {
+		*cpu = *cfg.CPU
+	}
+	if cfg.Memory != nil && !set["memory"] {
+		*memory = *cfg.Memory
+	}
+	applyDuration := func(name string, from *string, to *time.Duration) {
+		if from == nil || set[name] {
+			return
+		}
+		d, err := time.ParseDuration(*from)
+		if err != nil {
+			log.Fatalf("worker: config %s: %v", name, err)
+		}
+		*to = d
+	}
+	applyDuration("poll-interval", cfg.PollInterval, pollInterval)
+	applyDuration("job-timeout", cfg.JobTimeout, jobTimeout)
+}
+
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }
 
 func heartbeatLoop(c *client.Client, workerID string, interval time.Duration, stop <-chan struct{}) {

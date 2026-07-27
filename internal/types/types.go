@@ -76,6 +76,11 @@ type Job struct {
 	Retries    int `json:"retries"`
 	MaxRetries int `json:"max_retries"`
 
+	// WebhookURL, if set, overrides the control plane's default webhook
+	// for this job alone, so one control plane can notify different
+	// places for different work. Empty means "use the default, if any".
+	WebhookURL string `json:"webhook_url,omitempty"`
+
 	Output string `json:"output,omitempty"`
 	Error  string `json:"error,omitempty"`
 

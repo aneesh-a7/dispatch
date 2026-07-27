@@ -143,6 +143,57 @@ the snapshot is written and fsynced before the log is cleared, so a crash
 during compaction can be recovered by loading the snapshot and re-playing
 any mutations written after it.
 
+### Auth
+
+A single shared bearer token, checked by middleware in front of the mux.
+Auth is opt-in: with no token configured nothing changes, which keeps the
+original localhost setup a one-command affair. One shared secret (rather
+than per-user credentials, roles, or a token-issuing flow) matches the
+actual shape of the problem, a small set of machines and people who
+already trust each other, and none of that machinery is worth building
+before someone has asked for it.
+
+Two details that matter more than they look:
+
+- The comparison uses `subtle.ConstantTimeCompare`. A plain `==` returns
+  as soon as it hits a differing byte, so how long a rejection takes
+  leaks how many leading bytes the guess got right, which is enough to
+  recover a secret one byte at a time given enough tries.
+- `GET /healthz` stays open. Everything else requires the token. An
+  uptime check or load balancer should not need the cluster's credentials
+  to ask "is this process alive?", and the handler reports nothing else.
+
+Configuring a token also removes `POST /v1/dev/spawn-worker` from the mux
+entirely rather than gating it. That route opens a terminal on the
+control plane's own host, which only makes sense when the browser and the
+control plane are the same machine. Deleting it means a leaked token is
+not also a shell on the box.
+
+### Job-finished webhooks
+
+Durable scheduling meant a job survived a crash, but you still had to go
+look at a dashboard to find out it had finished, which is most of the
+original problem. When a job reaches a terminal state the control plane
+POSTs it to a configured URL (global default, overridable per job).
+
+Delivery runs in a goroutine and is best-effort: a slow, down, or hostile
+receiver must never stall the handler that called it, which is completing
+a job or reaping a dead worker. It retries a few times and gives up. The
+job's real status is already durable in the WAL before any of this, so a
+dropped notification costs a message, not correctness.
+
+Only terminal transitions notify. A failure with retry budget left goes
+back to pending, so you get one message per job outcome rather than one
+per attempt. All three places a job can end (the completion handler, the
+pending-cancel path, and the reaper failing an orphan permanently) call
+the same notifier.
+
+The payload carries the full job plus the same one-line summary under
+both `text` and `content`. Slack renders `text`, Discord renders
+`content`, and both ignore keys they do not know, so one payload posts
+usefully to either without dispatch shipping per-service client code,
+while a custom receiver ignores the summary and reads `job`.
+
 ## What's deliberately out of scope
 
 - **Sandboxed execution.** Workers run jobs as plain subprocesses via
@@ -150,7 +201,13 @@ any mutations written after it.
   malicious or buggy job has full access to the worker's environment.
   This is the single most important thing to fix before running
   anything untrusted, and is the natural next phase of this project.
-- **Auth.** The HTTP API has no authentication. Fine for a local/trusted
-  network; not fine for anything exposed beyond that. The dashboard's
-  "add worker" endpoint (which opens a local terminal) leans on the same
-  assumption and should never be exposed on a shared control plane.
+  Note that auth does not substitute for it: auth controls who may
+  submit a job, not what that job can do once it is running.
+- **Per-user credentials, rotation, and roles.** One shared token is the
+  whole auth story. Anyone holding it can do anything except spawn a
+  worker process on the host.
+- **Webhook signing.** Receivers cannot currently verify a payload came
+  from your control plane, so treat the data as untrusted on the
+  receiving end.
+- **Multi-node HA control plane.** Still a single point of failure. See
+  the note above on what full HA would require.

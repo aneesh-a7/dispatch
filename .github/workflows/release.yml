@@ -1,0 +1,70 @@
+name: release
+
+# Builds binaries for every supported platform on tag push and attaches
+# them to a GitHub Release. dispatch has no cgo and no dependencies, so
+# every target cross-compiles from one Linux runner with nothing but
+# GOOS/GOARCH set.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build release archives
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME}"
+          mkdir -p dist
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
+            goos="${target%/*}"
+            goarch="${target#*/}"
+            stage="dist/dispatch_${version}_${goos}_${goarch}"
+            mkdir -p "$stage"
+
+            ext=""
+            if [ "$goos" = "windows" ]; then ext=".exe"; fi
+
+            for cmd in controlplane worker dispatchctl; do
+              case "$cmd" in
+                controlplane) out="dispatch-controlplane" ;;
+                worker)       out="dispatch-worker" ;;
+                dispatchctl)  out="dispatchctl" ;;
+              esac
+              CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
+                go build -trimpath -ldflags="-s -w" \
+                -o "$stage/${out}${ext}" "./cmd/$cmd"
+            done
+
+            cp README.md LICENSE "$stage/" 2>/dev/null || cp README.md "$stage/"
+
+            if [ "$goos" = "windows" ]; then
+              (cd dist && zip -qr "$(basename "$stage").zip" "$(basename "$stage")")
+            else
+              (cd dist && tar -czf "$(basename "$stage").tar.gz" "$(basename "$stage")")
+            fi
+            rm -rf "$stage"
+          done
+          (cd dist && sha256sum * > checksums.txt)
+          ls -lh dist
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

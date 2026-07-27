@@ -48,24 +48,32 @@ do yet, and why.
 
 ## Quickstart
 
-Requires Go 1.22+. No external dependencies, pure standard library.
+Grab the archive for your platform from the
+[latest release](https://github.com/aneesh-a7/dispatch/releases/latest),
+unpack it, and put the three binaries somewhere on your `PATH`. There is
+nothing to install and no runtime to set up: they are statically linked
+and depend on nothing but the OS.
 
 ```bash
 # Terminal 1: start the control plane
-go run ./cmd/controlplane
+dispatch-controlplane
 
 # Terminal 2: start a worker
-go run ./cmd/worker
+dispatch-worker
 
 # Terminal 3: submit work
-go run ./cmd/dispatchctl submit -- echo "hello dispatch"
-go run ./cmd/dispatchctl submit -priority 5 -retries 2 -- python3 my_script.py
-go run ./cmd/dispatchctl submit -cpu 2 -memory 1024 -- ./heavy_job
+dispatchctl submit -- echo "hello dispatch"
+dispatchctl submit -priority 5 -retries 2 -- python3 my_script.py
+dispatchctl submit -cpu 2 -memory 1024 -- ./heavy_job
 
-go run ./cmd/dispatchctl list
-go run ./cmd/dispatchctl status <job-id>
-go run ./cmd/dispatchctl cancel <job-id>
+dispatchctl list
+dispatchctl status <job-id>
+dispatchctl cancel <job-id>
 ```
+
+Building from source instead needs Go 1.22+ and no other dependencies:
+substitute `go run ./cmd/controlplane`, `go run ./cmd/worker`, and
+`go run ./cmd/dispatchctl` for the three commands above.
 
 Or open **http://localhost:8080** in a browser once the control plane is
 running. The dashboard is built around a live cluster view: each worker
@@ -80,6 +88,89 @@ open a terminal on the same machine with a worker ready to run.
 Multiple workers can be started against the same control plane. Jobs are
 leased to whichever worker has free capacity, one at a time per worker,
 with no double-dispatch (see `Store.LeaseNextJob`).
+
+## Getting told when a job finishes
+
+The point of the project is to stop babysitting a terminal, so dispatch
+can push a job's result to you instead of making you go look. Point the
+control plane at a webhook URL and every job that reaches a terminal
+state (succeeded, failed, or cancelled) POSTs its result there:
+
+```bash
+dispatch-controlplane -webhook-url https://hooks.slack.com/services/...
+```
+
+The payload carries the full job as JSON under `job`, plus a one-line
+summary under both `text` (what Slack renders) and `content` (what
+Discord renders), so a Slack or Discord webhook URL works as-is with no
+glue code, while your own receiver can ignore the summary and read the
+structured job.
+
+A single job can override the default with `-webhook`, which is useful
+when most work should notify one place and one long-running job should
+notify somewhere else:
+
+```bash
+dispatchctl submit -webhook https://example.com/hook -- ./nightly-backup
+```
+
+Delivery is best-effort and happens in the background: it retries a few
+times, then gives up and logs. A job's recorded status never depends on
+whether its notification got through. A failure that still has retries
+left does not notify, so you get one message per job outcome rather than
+one per attempt.
+
+## Running it where other people can reach it
+
+By default there is no authentication, which is the right default for a
+control plane bound to localhost or a home LAN. The moment it is
+reachable by anyone else, set a shared token:
+
+```bash
+dispatch-controlplane -token "$(openssl rand -hex 32)"
+dispatch-worker  -token <same-token>
+dispatchctl      -token <same-token> list
+```
+
+Workers and the CLI both also read `$DISPATCH_TOKEN`, so you can export
+it once instead of passing it every time. The dashboard prompts for the
+token on first load and remembers it.
+
+Every route requires the token except `GET /healthz`, which stays open so
+uptime checks do not need credentials. Turning auth on also removes the
+dashboard's "Add worker" button endpoint entirely: that one opens a
+terminal on the control plane's own host, which only makes sense when
+you are the person sitting at it.
+
+For TLS, either pass a certificate directly:
+
+```bash
+dispatch-controlplane -tls-cert cert.pem -tls-key key.pem
+```
+
+or, for anything facing the public internet, terminate TLS at a reverse
+proxy (Caddy and nginx both do automatic certificate renewal in about a
+line of config) and point it at dispatch over localhost.
+
+## Config files
+
+Flags get unwieldy once you are restarting several workers with
+different capacities and tokens. Any flag can come from a JSON file
+instead, and an explicitly passed flag always wins over the file:
+
+```json
+{
+  "addr": ":8080",
+  "data_dir": "/var/lib/dispatch",
+  "token": "...",
+  "webhook_url": "https://hooks.slack.com/services/...",
+  "heartbeat_ttl": "30s"
+}
+```
+
+```bash
+dispatch-controlplane -config dispatch.json
+```
 
 ## What happens when a worker dies mid-job
 
@@ -124,10 +215,12 @@ go run ./cmd/loadtest -n 500          # submits 500 jobs, reports jobs/sec + p50
 ## CLI reference
 
 ```
-dispatchctl submit [-priority N] [-retries N] [-cpu N] [-memory MB] <command> [args...]
-dispatchctl status <job-id>
-dispatchctl cancel <job-id>
-dispatchctl list
+dispatchctl [-control-plane URL] [-token TOKEN] <command>
+
+  submit [-priority N] [-retries N] [-cpu N] [-memory MB] [-webhook URL] <command> [args...]
+  status <job-id>
+  cancel <job-id>
+  list
 ```
 
 ## Project layout
@@ -142,20 +235,27 @@ internal/
   types/          shared domain types (Job, Worker, Resources)
   store/          write-ahead log + in-memory index
   scheduler/      resource-aware leasing + dead-worker reaper
-  api/            HTTP handlers
+  api/            HTTP handlers + bearer-token auth
   client/         typed HTTP client (shared by worker + CLI)
+  notify/         job-finished webhook delivery
+  config/         optional JSON config files
   idgen/          stdlib-only sortable ID generation
   webui/          embedded live dashboard (static HTML/CSS/JS, served by the control plane)
 docs/
   ARCHITECTURE.md design decisions, trade-offs, what's deliberately out of scope
+  ROADMAP.md      what's next and why it's next
 ```
 
 ## Status
 
-Durable control plane, pull-based workers, priority + resource-aware
-(bin-packing) leasing, retries, dead-worker reaping, job cancellation,
-Prometheus metrics, a load-test tool, and a live sprite dashboard are all
-built and manually tested end to end. Still deliberately out of scope:
-sandboxed execution, WAL compaction, auth, and a multi-node (HA) control
-plane. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the reasoning
-on each.
+Built and tested end to end: a durable control plane with WAL compaction,
+pull-based workers, priority + resource-aware (bin-packing) leasing,
+retries, dead-worker reaping, job cancellation, bearer-token auth, TLS,
+job-finished webhooks, JSON config files, Prometheus metrics, a load-test
+tool, and a live sprite dashboard.
+
+Still deliberately out of scope: sandboxed execution (jobs run as plain
+subprocesses with full access to their worker's environment) and a
+multi-node HA control plane. See
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the reasoning on each and
+[docs/ROADMAP.md](docs/ROADMAP.md) for what comes next.

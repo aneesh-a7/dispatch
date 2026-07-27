@@ -12,32 +12,52 @@ import (
 	"time"
 
 	"github.com/aneesh/dispatch/internal/idgen"
+	"github.com/aneesh/dispatch/internal/notify"
 	"github.com/aneesh/dispatch/internal/scheduler"
 	"github.com/aneesh/dispatch/internal/store"
 	"github.com/aneesh/dispatch/internal/types"
 	"github.com/aneesh/dispatch/internal/webui"
 )
 
-type Server struct {
-	store *store.Store
-	sched *scheduler.Scheduler
-	mux   *http.ServeMux
+// Config carries the deployment-shaped choices the API needs. The zero
+// value is the original single-user localhost setup: no auth, no
+// notifications.
+type Config struct {
+	// Token, when non-empty, is the shared bearer token every request
+	// except /healthz must present.
+	Token string
+	// Notifier delivers job-finished webhooks. May be nil.
+	Notifier *notify.Notifier
 }
 
-func NewServer(s *store.Store, sc *scheduler.Scheduler) *Server {
-	srv := &Server{store: s, sched: sc, mux: http.NewServeMux()}
-	srv.routes()
+type Server struct {
+	store    *store.Store
+	sched    *scheduler.Scheduler
+	notifier *notify.Notifier
+	mux      *http.ServeMux
+	handler  http.Handler
+}
+
+func NewServer(s *store.Store, sc *scheduler.Scheduler, cfg Config) *Server {
+	srv := &Server{
+		store:    s,
+		sched:    sc,
+		notifier: cfg.Notifier,
+		mux:      http.NewServeMux(),
+	}
+	srv.routes(cfg.Token != "")
+	srv.handler = authMiddleware(cfg.Token, srv.mux)
 	return srv
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	s.mux.ServeHTTP(w, r)
+	s.handler.ServeHTTP(w, r)
 }
 
 // routes wires up the API using Go 1.22's method+pattern ServeMux
 // matching (e.g. "POST /v1/jobs/{id}"), which removes the need for a
 // third-party router for a surface area this small.
-func (s *Server) routes() {
+func (s *Server) routes(authEnabled bool) {
 	s.mux.HandleFunc("POST /v1/jobs", s.handleSubmitJob)
 	s.mux.HandleFunc("GET /v1/jobs", s.handleListJobs)
 	s.mux.HandleFunc("GET /v1/jobs/{id}", s.handleGetJob)
@@ -56,7 +76,15 @@ func (s *Server) routes() {
 	// Local dev convenience powering the dashboard's "Add worker" button.
 	// Unlike every route above, this one acts on the control plane's own
 	// machine rather than on shared state. See handleSpawnWorker.
-	s.mux.HandleFunc("POST /v1/dev/spawn-worker", s.handleSpawnWorker)
+	//
+	// Configuring a token means the control plane is expected to be
+	// reachable by someone other than the person sitting at it, so this
+	// route is removed entirely rather than merely gated: "start a process
+	// on the host" is a different risk class from the rest of the API, and
+	// a leaked token should not also be a shell on the box.
+	if !authEnabled {
+		s.mux.HandleFunc("POST /v1/dev/spawn-worker", s.handleSpawnWorker)
+	}
 
 	// Dashboard: catch-all, lowest priority in Go 1.22's pattern matching,
 	// so every /v1/* route above still wins. Served on the same port as
@@ -72,6 +100,7 @@ type submitJobRequest struct {
 	Priority   int             `json:"priority"`
 	MaxRetries int             `json:"max_retries"`
 	Resources  types.Resources `json:"resources"`
+	WebhookURL string          `json:"webhook_url"`
 }
 
 type registerWorkerRequest struct {
@@ -121,6 +150,7 @@ func (s *Server) handleSubmitJob(w http.ResponseWriter, r *http.Request) {
 		Priority:   req.Priority,
 		Resources:  req.Resources,
 		MaxRetries: req.MaxRetries,
+		WebhookURL: req.WebhookURL,
 		Status:     types.JobPending,
 		CreatedAt:  now,
 		UpdatedAt:  now,
@@ -178,6 +208,12 @@ func (s *Server) handleCancelJob(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.UpdateJob(job); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to persist cancellation: "+err.Error())
 		return
+	}
+	if job.Status.Terminal() {
+		// Only the pending-cancel path is terminal here. A running job is
+		// still running until its worker reports back, and gets its
+		// notification from handleCompleteJob then.
+		s.notifier.JobFinished(job)
 	}
 	writeJSON(w, http.StatusOK, job)
 }
@@ -286,6 +322,12 @@ func (s *Server) handleCompleteJob(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.UpdateJob(job); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to persist completion: "+err.Error())
 		return
+	}
+	if job.Status.Terminal() {
+		// A failure with retry budget left went back to pending above, so
+		// it is not terminal and does not notify: one notification per job
+		// outcome, not one per attempt.
+		s.notifier.JobFinished(job)
 	}
 	writeJSON(w, http.StatusOK, job)
 }

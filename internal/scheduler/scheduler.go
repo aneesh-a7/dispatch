@@ -10,6 +10,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/aneesh/dispatch/internal/notify"
 	"github.com/aneesh/dispatch/internal/store"
 	"github.com/aneesh/dispatch/internal/types"
 )
@@ -40,12 +41,15 @@ func (sc *Scheduler) Lease(workerID string) (*types.Job, bool) {
 // really a scheduler yet.
 type Reaper struct {
 	store        *store.Store
+	notifier     *notify.Notifier
 	heartbeatTTL time.Duration
 	interval     time.Duration
 }
 
-func NewReaper(s *store.Store, heartbeatTTL, interval time.Duration) *Reaper {
-	return &Reaper{store: s, heartbeatTTL: heartbeatTTL, interval: interval}
+// NewReaper builds a reaper. n may be nil, in which case no webhooks are
+// sent for jobs the reaper fails permanently.
+func NewReaper(s *store.Store, n *notify.Notifier, heartbeatTTL, interval time.Duration) *Reaper {
+	return &Reaper{store: s, notifier: n, heartbeatTTL: heartbeatTTL, interval: interval}
 }
 
 // Run blocks, sweeping on a ticker until stop is closed.
@@ -112,6 +116,12 @@ func (r *Reaper) sweep() {
 		}
 		if err := r.store.UpdateJob(&updated); err != nil {
 			log.Printf("reaper: failed to update orphaned job %s: %v", j.ID, err)
+			continue
+		}
+		if updated.Status.Terminal() {
+			// A job whose worker vanished is exactly the case you most
+			// want to hear about without going to look for it.
+			r.notifier.JobFinished(&updated)
 		}
 	}
 }
