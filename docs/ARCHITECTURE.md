@@ -1,9 +1,12 @@
 # Architecture & Design Decisions
 
 This document exists so that every corner cut in this codebase is a
-decision, not an accident. Anything not in "What's deliberately out of
-scope" below is either handled or a known week-2/3 gap noted inline in
-the code.
+decision, not an accident. It's also, honestly, closer to a running
+journal than a spec: most of these trade-offs got made at some point
+between "that seems right" and "that's the only way I can make this
+finish before I run out of evening." Anything not in "What's deliberately
+out of scope" below is either handled or a known gap noted inline in the
+code.
 
 ## Core design choices
 
@@ -23,12 +26,14 @@ transition is JSON-serialized, `fsync`'d, and only then applied to the
 in-memory maps that actually serve reads. On startup, the log is
 replayed from byte zero to rebuild state.
 
-This was a deliberate choice over reaching for SQLite or an embedded
-KV store: the goal of this project is to demonstrate understanding of
-*why* durable systems are built the way they are, not to demonstrate
-knowing how to import a database driver. A WAL is the mechanism
+I could have pulled in SQLite and been done with this in an afternoon.
+I didn't, on purpose. The point of this project, for me, was to actually
+understand *why* durable systems are built the way they are, not to
+prove I know how to import a database driver. A WAL is the mechanism
 underneath Postgres, etcd's Raft log, and Kafka. Building the smallest
-correct version of that mechanism is more informative than wrapping one.
+correct version of that mechanism taught me more than wrapping one ever
+would have, and it's more fun to argue about at 1am, which counts for
+something on a solo project.
 
 **Trade-off knowingly accepted:** every write pays an `fsync`, so this
 will never be fast under heavy write load. That's the right trade for a
@@ -47,8 +52,8 @@ the job, meaning it can run twice.
 This is a real, common distributed-systems trade-off (see: at-least-once
 vs. exactly-once delivery in any message queue). Getting to exactly-once
 would require either idempotency keys the *job* itself understands (out
-of this system's control (the job is an arbitrary shell command) or a
-two-phase commit between worker and control plane, which trades
+of this system's control, since the job is an arbitrary shell command)
+or a two-phase commit between worker and control plane, which trades
 complexity for a guarantee that most job types don't actually need.
 Commands run by this system should be written to be safely re-runnable
 (idempotent) where that matters, the same expectation most real batch
@@ -57,9 +62,10 @@ schedulers place on their jobs.
 ### Single control-plane node, no HA, no consensus
 
 There is exactly one control plane process and it is a single point of
-failure. This is the single biggest thing cut from "production-grade" to
-fit the scope of this project, and it's cut on purpose rather than
-half-attempted.
+failure. This is the biggest thing cut from "production-grade" to fit
+the scope of this project, and it's the one I'm least casual about: it's
+cut on purpose, not half-attempted, but it's still the first question
+I'd expect a good reviewer to ask.
 
 **What full HA would require**, roughly, in order of what I'd build:
 1. **Replicated log**: the WAL in `internal/store` would need to be
@@ -77,8 +83,8 @@ half-attempted.
    leader-election-by-heartbeat does not.
 
 None of this is implemented. It's flagged here because knowing the next
-step and choosing not to build it in a 3-week scope is a different thing
-than not knowing it's needed.
+step and choosing not to build it yet is a different thing than not
+knowing it's needed, and I want the difference on record.
 
 ### Retry semantics
 
@@ -97,14 +103,15 @@ its free capacity, and skips jobs that do not. A zero request fits
 anywhere and consumes nothing, so resource-awareness is opt-in and older
 untagged jobs behave exactly as before.
 
-The interesting decision is that a worker's *available* capacity is not
-stored. It is derived on read as `Capacity` minus the resources of the
-jobs currently running on it. The running jobs are already durable in the
-WAL, so there is nothing extra to persist, no separate counter that can
-drift, and no explicit "release on completion" step to forget: a job
-leaving the running state frees its capacity automatically. The cost is
-recomputing a small sum on each lease and each worker read, which at this
-scale is free.
+The part I actually enjoyed figuring out is that a worker's *available*
+capacity is not stored anywhere. It's derived on read as `Capacity`
+minus the resources of the jobs currently running on it. The running
+jobs are already durable in the WAL, so there is nothing extra to
+persist, no separate counter that can drift, and no explicit "release on
+completion" step I could forget to write: a job leaving the running
+state frees its capacity automatically, because there was never a number
+sitting around to forget to update. The cost is recomputing a small sum
+on each lease and each worker read, which at this scale is free.
 
 ### Job cancellation
 
@@ -143,15 +150,23 @@ the snapshot is written and fsynced before the log is cleared, so a crash
 during compaction can be recovered by loading the snapshot and re-playing
 any mutations written after it.
 
+I put this off for a while, partly because "the log grows forever" is a
+fun thing to write in a known-limitations list and partly because it
+felt like the kind of problem that only becomes real after weeks of
+uptime, which is exactly the situation where you'd rather it already be
+solved than find out the hard way.
+
 ### Auth
 
 A single shared bearer token, checked by middleware in front of the mux.
-Auth is opt-in: with no token configured nothing changes, which keeps the
-original localhost setup a one-command affair. One shared secret (rather
-than per-user credentials, roles, or a token-issuing flow) matches the
-actual shape of the problem, a small set of machines and people who
-already trust each other, and none of that machinery is worth building
-before someone has asked for it.
+Until this existed, the only adversary this thing had to worry about was
+me, forgetting I'd left port 8080 open to a network I didn't fully
+trust. Auth is opt-in: with no token configured nothing changes, which
+keeps the original localhost setup a one-command affair. One shared
+secret (rather than per-user credentials, roles, or a token-issuing
+flow) matches the actual shape of the problem, a small set of machines
+and people who already trust each other, and none of that machinery is
+worth building before someone has actually asked for it.
 
 Two details that matter more than they look:
 
@@ -173,8 +188,9 @@ not also a shell on the box.
 
 Durable scheduling meant a job survived a crash, but you still had to go
 look at a dashboard to find out it had finished, which is most of the
-original problem. When a job reaches a terminal state the control plane
-POSTs it to a configured URL (global default, overridable per job).
+original problem I set out to fix in the first place. When a job reaches
+a terminal state the control plane POSTs it to a configured URL (global
+default, overridable per job).
 
 Delivery runs in a goroutine and is best-effort: a slow, down, or hostile
 receiver must never stall the handler that called it, which is completing

@@ -1,21 +1,22 @@
 # Roadmap: making dispatch usable by someone other than its author
 
 Everything in the "current state" section of `docs/ARCHITECTURE.md` was
-built and tested with one person and a handful of machines they control
-directly, all on a trusted network, all started by hand. That covers the
-original problem (stop SSHing into whichever laptop is free). It does not
-cover the next one: someone else running dispatch across their own
-machines, possibly one of which is a rented server reachable from the
-open internet, without babysitting a terminal to find out when a job
-finishes.
+built and tested by one person (me) across a laptop, a desktop, and
+whatever else happened to be on the same trusted network at the time.
+That covers the original problem: stop SSHing into whichever machine is
+free. It does not cover the next one, which is what got me writing this
+document instead of just moving on to something shinier: someone else
+running dispatch across their own machines, possibly one of which is a
+rented server reachable from the open internet, without babysitting a
+terminal to find out when a job finishes.
 
-This document lays out what's missing to close that gap, in the order
-it's worth building it, plus a longer backlog of ideas that are real but
+This document lays out what was missing to close that gap, in the order
+it was worth building, plus a longer backlog of ideas that are real but
 not urgent. It complements `docs/ARCHITECTURE.md` rather than replacing
-it: that file explains what exists and why; this one explains what's next
-and why it's next.
+it: that file explains what exists and why; this one explains what's
+next and why it's next.
 
-## What actually stops someone else from using this today
+## What actually stopped someone else from using this
 
 Five concrete gaps, not vague ones:
 
@@ -28,15 +29,16 @@ Five concrete gaps, not vague ones:
 2. **No TLS.** Even once there's a token, plain HTTP means that token
    (and job output, which might contain anything the job printed) travels
    in the clear if the control plane is ever exposed past localhost.
-3. **No prebuilt binaries.** The only way to run dispatch right now is
-   `go run` from a source checkout. That's a nonstarter for someone who
-   doesn't already have Go installed and doesn't want to.
-4. **No way to find out a job finished without checking.** This is the
-   one that matters most: the entire premise of this project is "stop
-   babysitting terminals." The dashboard and `dispatchctl status` still
-   require you to go look. Nothing pushes a "job 4821 finished" signal
-   back to you. Until that exists, the core problem isn't actually solved
-   once you close the laptop.
+3. **No prebuilt binaries.** The only way to run dispatch was `go run`
+   from a source checkout. That's a nonstarter for someone who doesn't
+   already have Go installed and doesn't want to.
+4. **No way to find out a job finished without checking.** This was the
+   one that mattered most, since the entire premise of this project is
+   "stop babysitting terminals." The dashboard and `dispatchctl status`
+   still required you to go look. Nothing pushed a "job 4821 finished"
+   signal back to you. Until that existed, the core problem wasn't
+   actually solved once you closed the laptop, which is a fairly
+   embarrassing thing to realize about your own scheduler.
 5. **No config file.** Flags are fine for one worker. They get brittle
    fast once there are several workers with different capacities and
    tokens to keep straight, especially across restarts.
@@ -88,20 +90,20 @@ before anyone has asked for it.
   `amd64/arm64` binaries on tag push and attaches them to a GitHub
   Release. Pure `go build` with `GOOS`/`GOARCH` set, no cross-compilation
   toolchain needed since this has zero cgo dependencies.
-- Rewrite the README quickstart around downloading a release binary as
+- Rewrote the README quickstart around downloading a release binary as
   the primary path, with `go run` kept as the "building from source"
   alternative underneath.
-- No install script for now. (Notably: don't repeat the `curl | sh`
-  pattern seen elsewhere for this project's own releases either. A
+- No install script for now. (Notably: I'm not repeating the `curl | sh`
+  pattern I've seen elsewhere for this project's own releases either. A
   `Copy-Item`/`tar -xzf` + "put it on your PATH" instruction is a couple
   more lines in the README and doesn't ask anyone to pipe a downloaded
-  script into a shell.)
+  script straight into a shell.)
 
 ### 3. Webhooks on job completion (done)
 
-The actual fix for gap #4. When a job reaches a terminal state
-(succeeded, failed, or cancelled), the control plane POSTs the job's JSON
-to a configured URL:
+The actual fix for gap #4, and the feature I was most looking forward to
+building. When a job reaches a terminal state (succeeded, failed, or
+cancelled), the control plane POSTs the job's JSON to a configured URL:
 
 - `-webhook-url` flag / `DISPATCH_WEBHOOK_URL` env on the control plane
   sets a default applied to every job.
@@ -114,7 +116,7 @@ to a configured URL:
   webhook is a notification, not part of the durability story.
 - No signature/HMAC verification in the first pass (there's no secret
   exchange story yet without more auth machinery than is justified here);
-  document plainly that anyone pointing this at a public endpoint should
+  documented plainly that anyone pointing this at a public endpoint should
   treat the payload as untrusted-source-adjacent on the receiving end.
 - This is deliberately just an HTTP POST rather than baked-in Slack/
   Discord/email integrations: a webhook URL is the universal primitive,
@@ -126,7 +128,7 @@ to a configured URL:
 
 - `-tls-cert` / `-tls-key` flags on the control plane, using stdlib
   `http.ListenAndServeTLS` (zero new dependencies).
-- Document two paths in the README: a self-signed cert for testing
+- Documented two paths in the README: a self-signed cert for testing
   (`go run` snippet using `crypto/tls`'s cert generation, or plain
   `openssl req`), and, for anything actually exposed to the internet,
   terminating TLS at a reverse proxy (Caddy or nginx) in front of
@@ -143,7 +145,8 @@ to a configured URL:
   unchanged.
 - Mainly useful once someone's running more than one worker: capacity,
   token, and control-plane URL per machine, checked into a file instead
-  of retyped into a command line each time.
+  of retyped into a command line each time, which is the kind of thing I
+  only appreciated after doing it by hand one too many times.
 
 ## Backlog: real ideas, not yet scheduled
 
@@ -174,9 +177,13 @@ near-term plan.
 - **Job dependencies / simple DAGs.** Let job B declare it depends on job
   A and only become eligible to lease once A succeeds. Turns dispatch
   from "run one command" into "run a pipeline," which is a meaningfully
-  different (and more useful) tool, but touches the scheduler's core
-  leasing logic and needs real thought about what happens when a
-  dependency fails or is cancelled.
+  different (and more useful) tool. It's the idea I keep circling back
+  to, half because it's genuinely useful and half because it sounds like
+  a fun way to break my own scheduler in new and educational ways. It
+  touches the scheduler's core leasing logic and needs real thought
+  about what happens when a dependency fails or is cancelled, so it's
+  staying a backlog item until I've thought that through properly rather
+  than just wanted to build it.
 - **Live output streaming.** Right now the worker buffers a job's
   combined stdout/stderr with `cmd.CombinedOutput()` and only reports it
   once the process exits, so `dispatchctl status` shows nothing useful

@@ -1,20 +1,20 @@
 # dispatch
 
-A small distributed job scheduler: submit shell commands, have them run on
-whichever of your machines has a free worker, survive crashes without
-losing track of what was running.
+I have, more than once, forgotten which of my machines was two hours into
+a Monte Carlo run and only found out because the desktop's fan finally
+spun back down. `dispatch` exists so that stops happening: submit a
+shell command, it runs on whichever machine currently has a free worker,
+and if something dies mid-job you don't have to reconstruct where it was
+running from memory and vibes.
 
-I built this because I kept manually SSHing into whichever laptop/desktop
-was free to kick off long-running scripts (Monte Carlo simulations,
-batch data pulls) and then forgetting which machine was running what.
-`dispatch` is the smallest version of "a scheduler" that actually solves
-that: a control plane that tracks jobs durably, and worker agents that
-pull work and report back.
+It's a small distributed job scheduler: a control plane that tracks jobs
+durably, and worker agents that pull work and report back.
 
-It is not Kubernetes. It does not try to be. It's scoped to the parts of
-"distributed job scheduling" that are actually hard and actually
-interesting: durable state, failure detection, and at-least-once
-execution, without the surface area of a real orchestrator.
+It is not Kubernetes. It's not trying to be. It's scoped to the parts of
+"distributed job scheduling" that are actually hard and actually worth
+building yourself: durable state, failure detection, at-least-once
+execution. No auto-scaling groups, no YAML novels, no admission
+controllers.
 
 ## How it works
 
@@ -43,15 +43,15 @@ problems) and workers can come and go without the control plane needing
 to know anything about their reachability ahead of time.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design
-decisions and trade-offs: what this does, what it deliberately doesn't
-do yet, and why.
+decisions and trade-offs, including a couple I went back and forth on
+longer than I'd like to admit.
 
 ## Quickstart
 
 Grab the archive for your platform from the
 [latest release](https://github.com/aneesh-a7/dispatch/releases/latest),
 unpack it, and put the three binaries somewhere on your `PATH`. There is
-nothing to install and no runtime to set up: they are statically linked
+nothing to install and no runtime to babysit: they are statically linked
 and depend on nothing but the OS.
 
 ```bash
@@ -81,9 +81,10 @@ is a small animated sprite that reacts as work happens (it grabs a job
 when it starts, cheers on success, shudders on failure), jobs slide from
 the queue onto a worker, and a bar under each sprite shows how much of
 its capacity is in use. A stats strip up top tracks running, queued,
-throughput, and average queue wait. You can submit jobs from a form,
-click any queued or running job to cancel it, and hit "Add worker" to
-open a terminal on the same machine with a worker ready to run.
+throughput, and average queue wait. Yes, the sprites are a little much.
+That was on purpose. You can submit jobs from a form, click any queued
+or running job to cancel it, and hit "Add worker" to open a terminal on
+the same machine with a worker ready to run.
 
 Multiple workers can be started against the same control plane. Jobs are
 leased to whichever worker has free capacity, one at a time per worker,
@@ -91,10 +92,11 @@ with no double-dispatch (see `Store.LeaseNextJob`).
 
 ## Getting told when a job finishes
 
-The point of the project is to stop babysitting a terminal, so dispatch
-can push a job's result to you instead of making you go look. Point the
-control plane at a webhook URL and every job that reaches a terminal
-state (succeeded, failed, or cancelled) POSTs its result there:
+The whole reason this project exists is to stop babysitting a terminal,
+so I didn't want a system I still had to go check on like a crockpot.
+Point the control plane at a webhook URL and every job that reaches a
+terminal state (succeeded, failed, or cancelled) POSTs its result there
+instead of waiting for you to come ask:
 
 ```bash
 dispatch-controlplane -webhook-url https://hooks.slack.com/services/...
@@ -123,8 +125,8 @@ one per attempt.
 ## Running it where other people can reach it
 
 By default there is no authentication, which is the right default for a
-control plane bound to localhost or a home LAN. The moment it is
-reachable by anyone else, set a shared token:
+control plane bound to localhost or a home LAN you already trust. The
+moment it is reachable by anyone else, set a shared token:
 
 ```bash
 dispatch-controlplane -token "$(openssl rand -hex 32)"
@@ -154,9 +156,11 @@ line of config) and point it at dispatch over localhost.
 
 ## Config files
 
-Flags get unwieldy once you are restarting several workers with
-different capacities and tokens. Any flag can come from a JSON file
-instead, and an explicitly passed flag always wins over the file:
+Flags are fine right up until you're SSHed into the third machine at
+midnight trying to remember whether this one takes `-memory` in MB or
+you just made that convention up on the first machine and forgot. Any
+flag can come from a JSON file instead, and an explicitly passed flag
+always wins over the file:
 
 ```json
 {
@@ -178,15 +182,17 @@ Kill a worker (`kill -9`) while it's running a job. The control plane's
 reaper notices the missed heartbeats within `-heartbeat-ttl` (default
 15s), marks the worker dead, and requeues its in-flight job (or fails it
 permanently if the retry budget is exhausted). No job silently
-disappears because its worker vanished.
+disappears because its worker vanished, and nobody has to notice the
+silence and go investigate. That used to be my job. Now it's the
+reaper's.
 
 ## What happens when the control plane crashes
 
 Kill `-9` the control plane process and restart it against the same
 `-data-dir`. It replays its write-ahead log on startup and comes back
 with every job and worker exactly where it left off. Nothing is lost
-except whatever hadn't been fsync'd yet (which, by construction, is
-nothing that was ever acknowledged to a caller).
+except whatever hadn't been fsync'd yet, which, by construction, is
+nothing that was ever acknowledged to a caller.
 
 ## Resource-aware scheduling and cancellation
 
@@ -256,6 +262,6 @@ tool, and a live sprite dashboard.
 
 Still deliberately out of scope: sandboxed execution (jobs run as plain
 subprocesses with full access to their worker's environment) and a
-multi-node HA control plane. See
+multi-node HA control plane. Both are real gaps, not oversights. See
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the reasoning on each and
 [docs/ROADMAP.md](docs/ROADMAP.md) for what comes next.
