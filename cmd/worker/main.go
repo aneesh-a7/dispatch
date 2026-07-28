@@ -21,6 +21,7 @@ import (
 
 	"github.com/aneesh/dispatch/internal/client"
 	"github.com/aneesh/dispatch/internal/config"
+	"github.com/aneesh/dispatch/internal/sandbox"
 	"github.com/aneesh/dispatch/internal/sysinfo"
 	"github.com/aneesh/dispatch/internal/types"
 )
@@ -35,6 +36,8 @@ func main() {
 	heartbeatInterval := flag.Duration("heartbeat-interval", 5*time.Second, "how often to heartbeat (must be well under the control plane's heartbeat-ttl)")
 	cancelPollInterval := flag.Duration("cancel-poll-interval", 1*time.Second, "how often a running job checks whether it has been cancelled")
 	jobTimeout := flag.Duration("job-timeout", 5*time.Minute, "max time a single job is allowed to run")
+	sandboxed := flag.Bool("sandbox", true, "run jobs with an environment allowlist, an isolated working directory, and OS resource limits where available")
+	passEnv := flag.String("pass-env", "", "comma-separated environment variables to forward to jobs on top of the baseline allowlist")
 	configPath := flag.String("config", "", "optional JSON config file; command-line flags override it")
 	flag.Parse()
 
@@ -59,11 +62,17 @@ func main() {
 	}
 	log.Printf("worker: registered as %s (cpu=%d memory=%d)", worker.ID, *cpu, *memory)
 
+	sbOpts := sandbox.Options{Enabled: *sandboxed}
+	if *passEnv != "" {
+		sbOpts.PassEnv = strings.Split(*passEnv, ",")
+	}
+	log.Printf("worker: sandbox %s", sandbox.Describe(sbOpts.Enabled))
+
 	stopHeartbeat := make(chan struct{})
 	go heartbeatLoop(c, worker.ID, *heartbeatInterval, stopHeartbeat)
 	defer close(stopHeartbeat)
 
-	pollLoop(c, worker.ID, *pollInterval, *cancelPollInterval, *jobTimeout)
+	pollLoop(c, worker.ID, *pollInterval, *cancelPollInterval, *jobTimeout, sbOpts)
 }
 
 // fallbackCapacity is used when a platform has no memory detection. It is
@@ -154,7 +163,7 @@ func heartbeatLoop(c *client.Client, workerID string, interval time.Duration, st
 	}
 }
 
-func pollLoop(c *client.Client, workerID string, pollInterval, cancelPollInterval, jobTimeout time.Duration) {
+func pollLoop(c *client.Client, workerID string, pollInterval, cancelPollInterval, jobTimeout time.Duration, sbOpts sandbox.Options) {
 	for {
 		job, ok, err := c.Lease(workerID)
 		if err != nil {
@@ -168,7 +177,7 @@ func pollLoop(c *client.Client, workerID string, pollInterval, cancelPollInterva
 		}
 
 		log.Printf("worker: leased job %s: %s %s", job.ID, job.Command, strings.Join(job.Args, " "))
-		completion := runJob(c, job, cancelPollInterval, jobTimeout)
+		completion := runJob(c, job, cancelPollInterval, jobTimeout, sbOpts)
 
 		if err := c.CompleteJob(job.ID, completion); err != nil {
 			// The job did run (or fail) but the control plane doesn't
@@ -188,7 +197,7 @@ func pollLoop(c *client.Client, workerID string, pollInterval, cancelPollInterva
 // cancelling the context. A timeout cancels the same way, so the two are
 // told apart by which one tripped: an explicit cancel wins and is reported
 // as cancelled rather than failed.
-func runJob(c *client.Client, job *types.Job, cancelPollInterval, jobTimeout time.Duration) client.CompleteJobRequest {
+func runJob(c *client.Client, job *types.Job, cancelPollInterval, jobTimeout time.Duration, sbOpts sandbox.Options) client.CompleteJobRequest {
 	ctx, cancel := context.WithTimeout(context.Background(), jobTimeout)
 	defer cancel()
 
@@ -197,7 +206,7 @@ func runJob(c *client.Client, job *types.Job, cancelPollInterval, jobTimeout tim
 	go watchForCancel(ctx, c, job.ID, cancelPollInterval, &cancelled, cancel, watcherDone)
 
 	sink := newOutputSink(c, job.ID, outputFlushInterval)
-	output, runErr := execute(ctx, job.Command, job.Args, sink)
+	output, runErr := execute(ctx, job, sink, sbOpts)
 	sink.stop()
 	close(watcherDone)
 
@@ -244,12 +253,36 @@ func watchForCancel(ctx context.Context, c *client.Client, jobID string, interva
 // meant nothing at all was visible until the process exited. Wiring both
 // streams into one writer keeps the interleaving CombinedOutput gave us
 // while making the bytes available as they arrive.
-func execute(ctx context.Context, command string, args []string, sink *outputSink) (string, error) {
-	cmd := exec.CommandContext(ctx, command, args...)
+func execute(ctx context.Context, job *types.Job, sink *outputSink, sbOpts sandbox.Options) (string, error) {
+	sb, err := sandbox.New(job.ID, job.Resources, sbOpts)
+	if err != nil {
+		return "", err
+	}
+	defer sb.Close()
+
+	cmd := exec.CommandContext(ctx, job.Command, job.Args...)
 	cmd.Stdout = sink
 	cmd.Stderr = sink
-	err := cmd.Run()
-	return sink.collected(), err
+	sb.Apply(cmd)
+
+	if err := cmd.Start(); err != nil {
+		return sink.collected(), err
+	}
+	// Limits that can only be applied to a live process (cgroup
+	// membership, job object assignment) go on here. A failure means the
+	// job runs with less isolation than intended, which is worth saying
+	// out loud but not worth killing the job over.
+	if err := sb.Started(cmd); err != nil {
+		log.Printf("worker: job %s started with reduced isolation: %v", job.ID, err)
+	}
+
+	// Wait first, collect second, and resist the urge to fold these into
+	// one return statement: Go evaluates a return's operands left to
+	// right, so `return sink.collected(), cmd.Wait()` reads the buffer
+	// before the process has finished writing to it and quietly reports
+	// every job as having produced no output.
+	runErr := cmd.Wait()
+	return sink.collected(), runErr
 }
 
 // outputSink is what the running job's stdout and stderr are wired into.

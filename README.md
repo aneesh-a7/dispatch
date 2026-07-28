@@ -90,6 +90,55 @@ Multiple workers can be started against the same control plane. Jobs are
 leased to whichever worker has free capacity, one at a time per worker,
 with no double-dispatch (see `Store.LeaseNextJob`).
 
+## What a job can and cannot touch
+
+Jobs run sandboxed by default. The part that matters most is the
+environment: a worker started with `DISPATCH_TOKEN` in its environment
+used to hand that token to every job it ran, so anyone who could submit
+a job could also walk off with the cluster credential. Jobs now get an
+allowlist of the variables a program actually needs and nothing else,
+plus their own temporary working directory that's deleted when they
+finish.
+
+```
+worker: sandbox environment allowlist, isolated working directory,
+        PID/mount/IPC/UTS namespaces, cgroup v2 memory and CPU limits
+```
+
+The worker prints what's actually in force at startup, because a sandbox
+whose limits you can't see is worse than none. What you get depends on
+the platform:
+
+- **Linux**: PID, mount, IPC, and UTS namespaces, plus cgroup v2 memory
+  and CPU caps. Network is deliberately *not* isolated: most batch jobs
+  exist to fetch or upload something. If you want that too, run the
+  worker itself inside a network namespace.
+- **Windows**: a Job Object with kill-on-close (so a job that spawns
+  children can't leave orphans behind) and a memory ceiling.
+- **Elsewhere**: the environment and working-directory isolation only,
+  and it says so rather than implying limits it isn't enforcing.
+
+Resource limits come from the job's own request, which closes a loop that
+was previously open on one end: `-cpu 2 -memory 512` is both what the
+scheduler bin-packs against *and* what the OS enforces, instead of the
+number being an honour-system hint.
+
+If a job legitimately needs a variable from the worker's environment,
+forward it explicitly rather than opening the whole thing back up:
+
+```bash
+dispatch-worker -pass-env MY_API_ENDPOINT,HTTPS_PROXY
+```
+
+`-sandbox=false` restores the old inherit-everything behaviour if you
+need it.
+
+Worth being clear about the limits: this stops a job from casually
+reading the worker's secrets, filling its disk with scratch files, or
+eating all its memory. It is not a defence against someone actively
+trying to break out, and it does not sandbox the *worker*, which still
+runs whatever command it's given as your user.
+
 ## Watching a job while it runs
 
 `dispatchctl logs -f` tails a job's output as it's produced, rather than
@@ -328,6 +377,7 @@ internal/
   config/         optional JSON config files
   sysinfo/        per-platform CPU/memory detection for worker capacity
   livelog/        in-memory output buffers for running jobs (not durable, on purpose)
+  sandbox/        per-platform job isolation (env allowlist, namespaces, resource caps)
   idgen/          stdlib-only sortable ID generation
   webui/          embedded live dashboard (static HTML/CSS/JS, served by the control plane)
 docs/
@@ -339,7 +389,8 @@ docs/
 
 Built and tested end to end: a durable control plane with WAL compaction,
 pull-based workers, priority + resource-aware (bin-packing) leasing,
-job dependencies, recurring jobs, live output streaming, retries,
+job dependencies, recurring jobs, live output streaming, sandboxed job
+execution, retries,
 dead-worker reaping, job cancellation, bearer-token auth, TLS,
 job-finished webhooks, JSON config files, auto-detected worker capacity,
 Prometheus metrics, a load-test tool, and a live sprite dashboard.

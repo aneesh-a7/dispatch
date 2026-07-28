@@ -191,6 +191,61 @@ backup job). Cancelling does. "Stop this run" and "stop this recurring
 job" are genuinely ambiguous, and between the two, a cancel that keeps
 firing every hour is a much worse surprise than one that stops too much.
 
+### Job sandboxing
+
+Jobs used to be plain `os/exec` children: full inherited environment, the
+worker's own working directory, no resource ceiling. Fine when every job
+is a script you wrote, which is how this started, and steadily less fine
+once anyone else can submit work.
+
+The environment was the genuinely sharp edge, and I did not see it until
+I went looking. A worker started with `DISPATCH_TOKEN` in its environment
+passed that token to every job it ran. So the auth work, which was
+supposed to control *who may submit a job*, had quietly made every job a
+way to read the credential that controls submission. Auth and isolation
+turn out not to be separable in the way the roadmap implied: getting one
+right without the other left a hole shaped exactly like the thing I
+thought I had closed.
+
+An allowlist fixes it, and it is an allowlist rather than a denylist on
+purpose. A denylist has to anticipate every secret anyone might ever put
+in a worker's environment, and it only takes one nobody thought of.
+
+The rest is per-platform, and the package reports what is actually in
+force rather than implying a uniform guarantee:
+
+- **Linux**: PID, mount, IPC and UTS namespaces via `SysProcAttr`, plus
+  cgroup v2 memory and CPU limits written as plain files. Network is
+  deliberately not isolated: most batch jobs exist to move data
+  somewhere, and a namespace with no route out breaks the common case to
+  defend against the rare one. Someone who wants that can run the worker
+  inside a network namespace, which composes better than deciding it
+  here.
+- **Windows**: a Job Object providing a memory ceiling and, more usefully,
+  kill-on-close, which is what makes a job's whole process tree actually
+  disappear instead of leaving grandchildren behind.
+- **Anything else**: the portable protections, and an honest log line
+  saying that is all.
+
+Limits are taken from the job's declared `Resources`, which closes a loop
+that was previously open at one end. The same numbers the scheduler
+bin-packs against are now the numbers the kernel enforces, so a job
+asking for 512MB is both *scheduled* as needing 512MB and *stopped* at
+512MB. Before this, the request was an honour-system hint that the
+scheduler trusted completely.
+
+Failures here are deliberately soft. If a cgroup cannot be created or a
+job object cannot be assigned, the job runs with less isolation and the
+worker says so. Refusing to run work because a limit could not be applied
+would be its own kind of outage, and the honest log line is worth more
+than the strictness.
+
+What this is not: a defence against someone actively trying to escape.
+There is no seccomp filter, no user namespace remapping, no read-only
+root. It stops a job from casually reading the worker's secrets, filling
+its disk, or eating its memory. Anything stronger means a container
+runtime, which is a dependency this project does not want.
+
 ### Live output streaming
 
 Workers used to call `cmd.CombinedOutput()`, which meant a job's output
@@ -342,13 +397,12 @@ while a custom receiver ignores the summary and reads `job`.
 
 ## What's deliberately out of scope
 
-- **Sandboxed execution.** Workers run jobs as plain subprocesses via
-  `os/exec`. No namespace/cgroup isolation, no container runtime. A
-  malicious or buggy job has full access to the worker's environment.
-  This is the single most important thing to fix before running
-  anything untrusted, and is the natural next phase of this project.
-  Note that auth does not substitute for it: auth controls who may
-  submit a job, not what that job can do once it is running.
+- **Escape-proof isolation.** The sandbox above raises the floor a long
+  way, but there is no seccomp filter, no user-namespace remapping, and
+  no read-only root filesystem. It is protection against accidents and
+  casual snooping, not against someone determined to break out. That
+  needs a container runtime, and a container runtime is a dependency
+  this project has decided not to take.
 - **Per-user credentials, rotation, and roles.** One shared token is the
   whole auth story. Anyone holding it can do anything except spawn a
   worker process on the host.

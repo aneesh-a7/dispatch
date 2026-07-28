@@ -178,6 +178,22 @@ sweep can't double-queue.
 
 Failing keeps the series going; cancelling ends it.
 
+### Job sandboxing (done)
+
+Environment allowlist and per-job working directory everywhere; Linux
+namespaces plus cgroup v2 caps; Windows job objects with kill-on-close.
+The worker logs what is actually in force, since a sandbox whose limits
+you cannot see is worse than none.
+
+The finding worth recording: the auth work had accidentally created the
+hole this closes. A worker holding `DISPATCH_TOKEN` in its environment
+was passing it to every job, so "may submit a job" silently meant "may
+read the credential that controls submission." Auth and isolation are
+less separable than this document originally assumed.
+
+Job resource requests are now enforced, not just scheduled against,
+which closes a loop that had been open at one end the whole time.
+
 ### Live output streaming (done)
 
 `dispatchctl logs [-f]` tails a running job. Workers forward output as
@@ -210,14 +226,13 @@ Each of these is a legitimate next step after the above, listed with what
 it is, why it'd matter, and the trade-off that's kept it out of the
 near-term plan.
 
-- **Sandboxed execution.** Already flagged in `docs/ARCHITECTURE.md` as
-  the most important safety gap: jobs run as plain subprocesses with full
-  access to the worker's environment. Matters most once a control plane
-  has job submitters who aren't fully trusted (which auth alone doesn't
-  solve; auth controls who can submit, not what a submitted job can do
-  once it's running). Linux namespaces/cgroups and Windows Job Objects
-  are different enough that this is a real platform-specific undertaking,
-  not a quick add.
+- **Escape-proof job isolation.** The sandbox that shipped covers
+  environment, working directory, namespaces and resource caps, which is
+  the accident-and-snooping tier. Going further means seccomp filters,
+  user-namespace remapping, and a read-only root, and past a certain
+  point it means admitting a container runtime is the right tool. Worth
+  doing only if this ever needs to run genuinely untrusted code, which
+  is a different project from the one I set out to build.
 - **Multi-node HA control plane.** Removes the single point of failure.
   Needs a replicated log (Raft-style), leader election, and client
   redirect on failover. A large, well-scoped project on its own; not
