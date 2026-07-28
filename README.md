@@ -42,9 +42,10 @@ control plane never needs to open a connection to a worker (no NAT/firewall
 problems) and workers can come and go without the control plane needing
 to know anything about their reachability ahead of time.
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design
-decisions and trade-offs, including a couple I went back and forth on
-longer than I'd like to admit.
+See [docs/USE_CASES.md](docs/USE_CASES.md) for worked examples of what
+this is actually good for, and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+for the design decisions and trade-offs, including a couple I went back
+and forth on longer than I'd like to admit.
 
 ## Quickstart
 
@@ -182,9 +183,11 @@ something resembling a workflow.
 `-after` holds a job until the jobs it names have succeeded:
 
 ```bash
-FETCH=$(dispatchctl submit -- ./fetch-data.sh | grep -o 'job_[^ ]*')
+FETCH=$(dispatchctl submit -q -- ./fetch-data.sh)
 dispatchctl submit -after "$FETCH" -- ./transform.sh
 ```
+
+`-q` prints only the job ID, which is what makes chaining scriptable.
 
 A job can wait on several (`-after id1,id2`), and a waiting job doesn't
 occupy a worker while it waits. If any prerequisite ends up failed or
@@ -362,7 +365,7 @@ go run ./cmd/loadtest -n 500          # submits 500 jobs, reports jobs/sec + p50
 ```
 dispatchctl [-control-plane URL] [-token TOKEN] <command>
 
-  submit [-priority N] [-retries N] [-cpu N] [-memory MB] [-webhook URL]
+  submit [-q] [-priority N] [-retries N] [-cpu N] [-memory MB] [-webhook URL]
          [-after id1,id2] [-every 1h] <command> [args...]
   status <job-id>
   logs [-f] <job-id>
@@ -393,7 +396,8 @@ internal/
   webui/          embedded live dashboard (static HTML/CSS/JS, served by the control plane)
 docs/
   ARCHITECTURE.md design decisions, trade-offs, what's deliberately out of scope
-  ROADMAP.md      what's next and why it's next
+  ROADMAP.md      what is next and why it is next
+  USE_CASES.md    worked examples, each one verified against this version
 ```
 
 ## Status

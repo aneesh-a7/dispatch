@@ -73,6 +73,7 @@ func cmdSubmit(c *client.Client, args []string) {
 	webhook := fs.String("webhook", "", "POST this job's result here when it finishes, overriding the control plane's default")
 	every := fs.Duration("every", 0, "re-run this job repeatedly, waiting this long after each run finishes (e.g. 1h)")
 	after := fs.String("after", "", "comma-separated job IDs that must succeed before this job runs")
+	quiet := fs.Bool("q", false, "print only the job ID, for feeding straight into -after")
 	fs.Parse(args)
 
 	var dependsOn []string
@@ -101,6 +102,17 @@ func cmdSubmit(c *client.Client, args []string) {
 		Every:      *every,
 	})
 	fatalIf(err)
+
+	// Chaining jobs means feeding one command's output into the next
+	// one's -after, and the friendly multi-line version of this output
+	// mentions other job IDs, so anything grepping for an ID picks up
+	// the dependencies too and passes nonsense along. -q prints the one
+	// thing a script wants.
+	if *quiet {
+		fmt.Println(job.ID)
+		return
+	}
+
 	fmt.Printf("submitted job %s (status: %s)\n", job.ID, job.Status)
 	if job.Every > 0 {
 		fmt.Printf("  recurring: next run queued %s after each finish\n", job.Every)
