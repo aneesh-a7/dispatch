@@ -76,15 +76,26 @@ substitute `go run ./cmd/controlplane`, `go run ./cmd/worker`, and
 `go run ./cmd/dispatchctl` for the three commands above.
 
 Or open **http://localhost:8080** in a browser once the control plane is
-running. The dashboard is built around a live cluster view: each worker
-is a small animated sprite that reacts as work happens (it grabs a job
-when it starts, cheers on success, shudders on failure), jobs slide from
-the queue onto a worker, and a bar under each sprite shows how much of
-its capacity is in use. A stats strip up top tracks running, queued,
-throughput, and average queue wait. Yes, the sprites are a little much.
-That was on purpose. You can submit jobs from a form, click any queued
-or running job to cancel it, and hit "Add worker" to open a terminal on
-the same machine with a worker ready to run.
+running, where the cluster is a farm.
+
+Every job is a crop. It waits as a seed by the shed while it's queued,
+gets planted the moment a worker leases it, and grows while it runs.
+Succeed and it ripens and gets harvested; fail and it withers brown;
+cancel it and a farmhand yanks it out of the ground and flings it off
+the field, which is the most satisfying way I could think of to render
+`DELETE /v1/jobs/{id}`. Workers are the farmhands, walking out to
+whatever they're tending and back to their cottage when idle, so with a
+few of them running you can watch the whole crew work the field at once.
+
+A seed tied down with a dashed ring is waiting on a prerequisite. A
+small sundial peg means the job recurs. A cottage with its lights out is
+a worker that missed its heartbeats.
+
+None of this is decoration over a separate toy model: every position and
+animation is derived from the same `/v1/jobs` and `/v1/workers` records
+the CLI reads, so what you're watching really is the scheduler. There's
+a stats strip up top, a form to sow new jobs, and an "Add worker" button
+that opens a terminal on the same machine with a farmhand ready to go.
 
 Multiple workers can be started against the same control plane. Jobs are
 leased to whichever worker has free capacity, one at a time per worker,

@@ -1,8 +1,14 @@
 // Plain JS, no build step, no framework. This talks to the same /v1/*
-// JSON API that the CLI and worker use. The only dashboard-specific
-// endpoint is POST /v1/dev/spawn-worker, a local convenience behind the
-// "Add worker" button; every number and animation here is derived from
-// the same job and worker data any client sees.
+// JSON API that the CLI and worker use.
+//
+// The stage is a farm. A job is a crop: it waits as a seed by the shed,
+// gets planted when a worker leases it, grows while it runs, and is
+// harvested, withers, or gets torn out of the ground depending on how it
+// ends. A worker is a farmhand who walks out to whatever it is tending.
+//
+// None of that is decoration over a separate model. Every position and
+// animation below is derived from the same job and worker records the
+// CLI sees, so what you are watching really is the scheduler.
 
 const POLL_INTERVAL_MS = 1500;
 const THROUGHPUT_WINDOW_MS = 60000;
@@ -58,12 +64,15 @@ function resLabel(res) {
   return `${res.cpu || 0}cpu/${res.memory || 0}mb`;
 }
 
+function isTerminal(status) {
+  return status === "succeeded" || status === "failed" || status === "cancelled";
+}
+
 // --- auth ----------------------------------------------------------------
 //
-// The control plane may require a bearer token. It is kept in localStorage
-// so a reload does not ask again, and attached to every request from here.
-// A 401 clears it and re-prompts, which also covers the token being
-// changed on the server.
+// The control plane may require a bearer token. It is kept in
+// localStorage so a reload does not ask again. A 401 clears it and
+// re-prompts, which also covers the token changing on the server.
 
 const TOKEN_KEY = "dispatch.token";
 
@@ -78,7 +87,6 @@ function promptForToken(message) {
   return true;
 }
 
-// authFetch adds the token header and turns a 401 into a prompt-and-retry.
 function authFetch(path, opts = {}) {
   const token = getToken();
   const headers = new Headers(opts.headers || {});
@@ -163,59 +171,338 @@ function renderStats(workers, jobs) {
   setStat("stat-failed", failed);
 }
 
-// --- cluster scene -------------------------------------------------------
-//
-// The scene keeps long-lived DOM elements keyed by id and moves them as
-// each poll's snapshot changes, rather than re-rendering from scratch.
-// That is what lets a chip glide from the queue onto a worker, and lets a
-// sprite react to an event exactly once: transitions are found by diffing
-// this poll's jobs against the previous poll's.
+// --- the farm ------------------------------------------------------------
 
-const scene = {
+const farm = {
   stage: document.getElementById("stage"),
-  overlay: document.getElementById("chips-overlay"),
-  queueBox: document.getElementById("queue-box"),
-  workerRow: document.getElementById("worker-row"),
+  plots: document.getElementById("plots"),
+  // Cottages get their own layer because layoutFarm rebuilds .plots
+  // wholesale on every resize. Sharing that container meant a resize
+  // silently deleted every cottage and left the reconciler holding
+  // detached elements it kept happily styling.
+  cottages: document.getElementById("cottages"),
+  crops: document.getElementById("crops"),
+  hands: document.getElementById("hands"),
+  seeds: document.getElementById("seeds"),
   noWorkers: document.getElementById("no-workers"),
-  workerEls: new Map(), // workerId -> element
-  chips: new Map(), // jobId -> { el, inner, status, placed }
-  finished: new Set(), // jobIds whose finish animation already played
-  prevJobs: new Map(), // jobId -> { status, workerId } from the last poll
+
+  plotPoints: [],           // every plot position on the field
+  plotOf: new Map(),        // jobId -> plot index, held for the job's life
+  takenPlots: new Set(),
+  cropEls: new Map(),       // jobId -> element
+  seedEls: new Map(),       // jobId -> element
+  handEls: new Map(),       // workerId -> element
+  cottageEls: new Map(),    // workerId -> element
+  homes: new Map(),         // workerId -> {x, y}
+  harvested: new Set(),     // jobIds whose ending animation already played
+  prevJobs: new Map(),      // last poll's status, for detecting transitions
 };
 
-function makeWorkerEl(worker) {
+// layout recomputes plot and cottage positions for the current stage size.
+// Plot positions are index-stable, so a crop keeps its patch of dirt for
+// as long as it lives even when the window is resized around it.
+function layoutFarm() {
+  const rect = farm.stage.getBoundingClientRect();
+  const w = rect.width, h = rect.height;
+
+  const left = 138, right = w - 26;
+  const top = 52, bottom = h - 78;
+  const cellW = 62, cellH = 56;
+
+  const cols = Math.max(1, Math.floor((right - left) / cellW));
+  const rows = Math.max(1, Math.floor((bottom - top) / cellH));
+
+  farm.plotPoints = [];
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      farm.plotPoints.push({
+        x: left + cellW / 2 + c * cellW,
+        y: top + cellH / 2 + r * cellH,
+      });
+    }
+  }
+
+  farm.plots.innerHTML = farm.plotPoints
+    .map((p) => `<div class="plot" style="left:${p.x}px;top:${p.y}px"></div>`)
+    .join("");
+
+  farm.homeRow = h - 34;
+  farm.homeLeft = 150;
+  farm.homeGap = Math.min(96, Math.max(70, (w - 190) / 6));
+}
+
+function plotPointFor(jobId) {
+  if (farm.plotOf.has(jobId)) {
+    const i = farm.plotOf.get(jobId);
+    return farm.plotPoints[i] || farm.plotPoints[0] || { x: 200, y: 120 };
+  }
+  // Take the lowest free plot so the field fills in reading order rather
+  // than scattering, which makes it much easier to see how much work is
+  // actually in flight.
+  let idx = farm.plotPoints.findIndex((_, i) => !farm.takenPlots.has(i));
+  if (idx === -1) idx = farm.plotOf.size % Math.max(1, farm.plotPoints.length);
+  farm.plotOf.set(jobId, idx);
+  farm.takenPlots.add(idx);
+  return farm.plotPoints[idx] || { x: 200, y: 120 };
+}
+
+function releasePlot(jobId) {
+  if (!farm.plotOf.has(jobId)) return;
+  farm.takenPlots.delete(farm.plotOf.get(jobId));
+  farm.plotOf.delete(jobId);
+}
+
+function homeFor(workerId, index) {
+  if (!farm.homes.has(workerId)) {
+    farm.homes.set(workerId, index);
+  }
+  const i = farm.homes.get(workerId);
+  return { x: farm.homeLeft + i * farm.homeGap, y: farm.homeRow };
+}
+
+// --- farmhands -----------------------------------------------------------
+
+function makeHandEl(worker) {
   const el = document.createElement("div");
-  el.className = "worker";
+  el.className = "farmhand";
+  // The inner markup is the original worker sprite, unchanged: every
+  // existing animation keys off .worker, .working, .dead and .react-*,
+  // so reusing the class means the sprites behave exactly as before.
   el.innerHTML = `
-    <div class="sprite">
-      <div class="flash"></div>
-      <div class="body">
-        <span class="eye left"></span>
-        <span class="eye right"></span>
+    <div class="worker">
+      <div class="sprite">
+        <div class="flash"></div>
+        <div class="body">
+          <span class="eye left"></span>
+          <span class="eye right"></span>
+        </div>
       </div>
-    </div>
-    <div class="worker-name">${shortId(worker.id)}</div>
-    <div class="cap-bars">
-      <div class="cap cpu"><span class="cap-fill"></span></div>
-      <div class="cap mem"><span class="cap-fill"></span></div>
+      <div class="worker-name">${shortId(worker.id)}</div>
     </div>`;
   return el;
 }
 
-function react(workerId, cls) {
-  const el = scene.workerEls.get(workerId);
-  if (!el) return;
-  el.classList.remove("react-grab", "react-cheer", "react-oops", "react-drop");
-  void el.offsetWidth;
-  el.classList.add(cls);
-  setTimeout(() => el.classList.remove(cls), 650);
+function moveHand(el, x, y) {
+  const to = `translate(${x}px, ${y}px) translate(-50%, -100%)`;
+  if (el.dataset.pos === to) return;
+  // Lean into the walk only while actually travelling.
+  el.classList.add("walking");
+  clearTimeout(el._walkTimer);
+  el._walkTimer = setTimeout(() => el.classList.remove("walking"), 1150);
+  el.dataset.pos = to;
+  el.style.transform = to;
 }
 
-// fireEvents compares this poll to the last and triggers a sprite reaction
-// for each meaningful transition, so every job event shows up on a sprite.
+function reconcileHands(workers, jobs) {
+  const seen = new Set();
+
+  workers.forEach((w, i) => {
+    seen.add(w.id);
+    let el = farm.handEls.get(w.id);
+    if (!el) {
+      el = makeHandEl(w);
+      farm.hands.appendChild(el);
+      farm.handEls.set(w.id, el);
+
+      const cottage = document.createElement("div");
+      cottage.className = "cottage";
+      farm.cottages.appendChild(cottage);
+      farm.cottageEls.set(w.id, cottage);
+
+      // Drop a new hand at its cottage without animating in from 0,0.
+      const home = homeFor(w.id, i);
+      el.style.transition = "none";
+      moveHand(el, home.x, home.y);
+      void el.offsetWidth;
+      el.style.transition = "";
+    }
+
+    const home = homeFor(w.id, i);
+    const cottage = farm.cottageEls.get(w.id);
+    if (cottage) {
+      cottage.style.left = home.x + "px";
+      cottage.style.top = home.y + "px";
+      cottage.classList.toggle("dark", w.status !== "alive");
+    }
+
+    const inner = el.querySelector(".worker");
+    inner.classList.toggle("dead", w.status === "dead");
+
+    // Walk to whatever this hand is tending. With several jobs running on
+    // one worker (bin-packing), it tends the one it picked up most
+    // recently, which is what makes a busy worker visibly move around the
+    // field rather than stand still.
+    const mine = jobs
+      .filter((j) => j.status === "running" && j.worker_id === w.id)
+      .sort((a, b) => new Date(b.started_at || 0) - new Date(a.started_at || 0));
+
+    inner.classList.toggle("working", mine.length > 0 && w.status === "alive");
+
+    if (mine.length > 0 && w.status === "alive") {
+      const p = plotPointFor(mine[0].id);
+      moveHand(el, p.x, p.y + 20);
+    } else {
+      moveHand(el, home.x, home.y);
+    }
+  });
+
+  for (const [id, el] of farm.handEls) {
+    if (!seen.has(id)) {
+      el.remove();
+      farm.handEls.delete(id);
+      const c = farm.cottageEls.get(id);
+      if (c) c.remove();
+      farm.cottageEls.delete(id);
+      farm.homes.delete(id);
+    }
+  }
+  farm.noWorkers.style.display = workers.length ? "none" : "block";
+}
+
+// --- crops and seeds -----------------------------------------------------
+
+function makeCropEl(job) {
+  const el = document.createElement("div");
+  el.className = "crop";
+  el.dataset.id = job.id;
+  el.title = jobCommand(job);
+  el.innerHTML = `
+    <div class="stem"></div>
+    <div class="leaf l"></div>
+    <div class="leaf r"></div>
+    <div class="head"></div>`;
+  return el;
+}
+
+// growthStage maps how long a job has been running onto how tall its
+// crop is. It is honest about progress in the only way possible for an
+// arbitrary shell command: it shows elapsed time, not percent complete,
+// because nothing here knows how far along the work actually is.
+function growthStage(job) {
+  if (!job.started_at) return 0;
+  const secs = (Date.now() - new Date(job.started_at).getTime()) / 1000;
+  if (secs < 1.5) return 0;
+  if (secs < 4) return 1;
+  if (secs < 9) return 2;
+  return 3;
+}
+
+// cropClass composes a crop's classes so the modifiers (recurring,
+// blocked) survive every state change. Building the class string in one
+// place is what stops a fast recurring job from losing its sundial the
+// instant it finishes, which is exactly when you are looking at it.
+function cropClass(job, state) {
+  let cls = `crop stage-${state === "growing" ? growthStage(job) : 3}`;
+  if (state && state !== "growing") cls += " " + state;
+  if (job.every > 0) cls += " recurring";
+  if (state === "growing" && (job.depends_on || []).length) cls += " blocked";
+  return cls;
+}
+
+function renderSeeds(pending) {
+  const seen = new Set();
+  pending.forEach((job, i) => {
+    seen.add(job.id);
+    let el = farm.seedEls.get(job.id);
+    if (!el) {
+      el = document.createElement("div");
+      el.title = jobCommand(job);
+      farm.seeds.appendChild(el);
+      farm.seedEls.set(job.id, el);
+    }
+    // A job waiting on a prerequisite is still pending, so it lives in
+    // the seed pile rather than the field. Marking it here rather than on
+    // a crop is the difference between the state being visible and the
+    // style being dead code: a blocked job never reaches the ground.
+    const blocked = (job.depends_on || []).length > 0;
+    el.className = "seed" + (blocked ? " blocked" : "") + (job.every > 0 ? " recurring" : "");
+    el.title = jobCommand(job) + (blocked ? " (waiting on a prerequisite)" : "");
+    // Seeds pile up beside the shed in a small heap.
+    const col = i % 3, row = Math.floor(i / 3);
+    el.style.left = 30 + col * 17 + "px";
+    el.style.top = 148 + row * 15 + "px";
+    el.style.display = row > 5 ? "none" : "";
+    el.style.animationDelay = (i % 7) * 0.18 + "s";
+  });
+  for (const [id, el] of farm.seedEls) {
+    if (!seen.has(id)) {
+      el.classList.add("leaving");
+      setTimeout(() => el.remove(), 300);
+      farm.seedEls.delete(id);
+    }
+  }
+}
+
+function renderCrops(jobs) {
+  const live = new Set();
+
+  // Growing crops: anything a worker currently holds.
+  for (const job of jobs) {
+    if (job.status !== "running") continue;
+    live.add(job.id);
+    let el = farm.cropEls.get(job.id);
+    if (!el) {
+      el = makeCropEl(job);
+      farm.crops.appendChild(el);
+      farm.cropEls.set(job.id, el);
+    }
+    const p = plotPointFor(job.id);
+    el.style.left = p.x + "px";
+    el.style.top = p.y + "px";
+    el.className = cropClass(job, "growing");
+  }
+
+  // Endings. Each plays once, then the crop is cleared from the field.
+  for (const job of jobs) {
+    if (!isTerminal(job.status) || farm.harvested.has(job.id)) continue;
+    farm.harvested.add(job.id);
+
+    let el = farm.cropEls.get(job.id);
+    if (!el) {
+      // A job that finished before we ever saw it grow still deserves its
+      // moment, so plant one just to end it.
+      el = makeCropEl(job);
+      farm.crops.appendChild(el);
+      farm.cropEls.set(job.id, el);
+      const p = plotPointFor(job.id);
+      el.style.left = p.x + "px";
+      el.style.top = p.y + "px";
+      el.className = cropClass(job, "growing");
+      void el.offsetWidth;
+    }
+    live.add(job.id);
+
+    if (job.status === "succeeded") {
+      el.className = cropClass(job, "done");
+      setTimeout(() => harvest(job.id), 900);
+    } else if (job.status === "cancelled") {
+      el.className = cropClass(job, "uprooted");
+      setTimeout(() => harvest(job.id), 800);
+    } else {
+      el.className = cropClass(job, "failed");
+      setTimeout(() => harvest(job.id), 1500);
+    }
+  }
+
+  for (const [id] of farm.cropEls) {
+    if (!live.has(id)) harvest(id);
+  }
+}
+
+function harvest(jobId) {
+  const el = farm.cropEls.get(jobId);
+  if (!el) return;
+  farm.cropEls.delete(jobId);
+  releasePlot(jobId);
+  el.style.opacity = "0";
+  setTimeout(() => el.remove(), 350);
+}
+
+// fireEvents diffs this poll against the last and pokes the sprite that
+// caused each change, so every job transition is visible on a farmhand.
 function fireEvents(jobs) {
   for (const j of jobs) {
-    const prev = scene.prevJobs.get(j.id);
+    const prev = farm.prevJobs.get(j.id);
     const was = prev ? prev.status : null;
     if (j.status === "running" && was !== "running") {
       react(j.worker_id, "react-grab");
@@ -226,182 +513,39 @@ function fireEvents(jobs) {
       else if (was === "running" && j.status === "pending") react(prev.workerId, "react-oops");
     }
   }
-  scene.prevJobs = new Map(jobs.map((j) => [j.id, { status: j.status, workerId: j.worker_id }]));
+  farm.prevJobs = new Map(jobs.map((j) => [j.id, { status: j.status, workerId: j.worker_id }]));
 }
 
-function isTerminal(status) {
-  return status === "succeeded" || status === "failed" || status === "cancelled";
+function react(workerId, cls) {
+  const host = farm.handEls.get(workerId);
+  if (!host) return;
+  const el = host.querySelector(".worker");
+  if (!el) return;
+  el.classList.remove("react-grab", "react-cheer", "react-oops", "react-drop");
+  void el.offsetWidth;
+  el.classList.add(cls);
+  setTimeout(() => el.classList.remove(cls), 700);
 }
 
-function updateCapacityBars(el, worker) {
-  const setBar = (sel, used, total) => {
-    const fill = el.querySelector(sel);
-    if (!fill) return;
-    const pct = total > 0 ? Math.min(100, (used / total) * 100) : 0;
-    fill.style.width = pct + "%";
-    fill.classList.toggle("full", pct >= 99.5);
-  };
-  const cap = worker.capacity || { cpu: 0, memory: 0 };
-  const avail = worker.available || cap;
-  setBar(".cap.cpu .cap-fill", cap.cpu - avail.cpu, cap.cpu);
-  setBar(".cap.mem .cap-fill", cap.memory - avail.memory, cap.memory);
-}
-
-function reconcileWorkers(workers) {
-  const seen = new Set();
-  for (const w of workers) {
-    seen.add(w.id);
-    let el = scene.workerEls.get(w.id);
-    if (!el) {
-      el = makeWorkerEl(w);
-      scene.workerRow.appendChild(el);
-      scene.workerEls.set(w.id, el);
-    }
-    el.classList.toggle("dead", w.status === "dead");
-    el.classList.remove("working"); // re-derived from running jobs below
-    updateCapacityBars(el, w);
-  }
-  for (const [id, el] of scene.workerEls) {
-    if (!seen.has(id)) {
-      el.remove();
-      scene.workerEls.delete(id);
-    }
-  }
-  scene.noWorkers.style.display = workers.length ? "none" : "block";
-}
-
-function ensureChip(job) {
-  let rec = scene.chips.get(job.id);
-  if (rec) return rec;
-  const el = document.createElement("div");
-  el.className = "chip spawning";
-  el.dataset.id = job.id;
-  const inner = document.createElement("span");
-  inner.className = "chip-inner";
-  inner.textContent = truncate(jobCommand(job), 16);
-  el.appendChild(inner);
-  scene.overlay.appendChild(el);
-  rec = { el, inner, status: "", placed: false };
-  scene.chips.set(job.id, rec);
-  return rec;
-}
-
-function moveChip(rec, x, y) {
-  if (!rec.placed) {
-    rec.el.style.transition = "none";
-    rec.el.style.transform = `translate(${x}px, ${y}px)`;
-    void rec.el.offsetWidth;
-    rec.el.style.transition = "";
-    rec.el.classList.remove("spawning");
-    rec.placed = true;
-  } else {
-    rec.el.style.transform = `translate(${x}px, ${y}px)`;
-  }
-}
-
-function setChipState(rec, state) {
-  if (rec.status === state) return;
-  rec.el.classList.remove("pending", "running", "done", "failed", "cancelled");
-  rec.el.classList.add(state);
-  rec.status = state;
-}
-
-function playOnce(rec, cls) {
-  rec.inner.classList.remove("pop", "shake");
-  void rec.inner.offsetWidth;
-  rec.inner.classList.add(cls);
-}
-
-function removeChip(id) {
-  const rec = scene.chips.get(id);
-  if (!rec) return;
-  scene.chips.delete(id);
-  rec.el.classList.add("leaving");
-  setTimeout(() => rec.el.remove(), 300);
-}
-
-function workerChipTarget(workerId, stageRect) {
-  const wEl = scene.workerEls.get(workerId);
-  if (!wEl) return null;
-  const wr = wEl.getBoundingClientRect();
-  return {
-    x: wr.left - stageRect.left + wr.width / 2 - 58,
-    y: wr.top - stageRect.top - 20,
-  };
-}
-
-function renderScene(workers, jobs) {
-  reconcileWorkers(workers);
-
-  const stageRect = scene.stage.getBoundingClientRect();
-  const queueRect = scene.queueBox.getBoundingClientRect();
-  const active = new Set();
-
-  for (const j of jobs) {
-    if (j.status === "running" && j.worker_id) {
-      const wEl = scene.workerEls.get(j.worker_id);
-      if (wEl) wEl.classList.add("working");
-    }
-  }
+function renderFarm(workers, jobs) {
+  if (!farm.plotPoints.length) layoutFarm();
 
   const pending = jobs
     .filter((j) => j.status === "pending")
     .sort((a, b) => (a.created_at || "").localeCompare(b.created_at || ""));
-  pending.forEach((j, i) => {
-    active.add(j.id);
-    const rec = ensureChip(j);
-    setChipState(rec, "pending");
-    const x = queueRect.left - stageRect.left + 10;
-    const maxY = queueRect.bottom - stageRect.top - 28;
-    const y = Math.min(queueRect.top - stageRect.top + 34 + i * 30, maxY);
-    moveChip(rec, x, y);
-  });
 
-  for (const j of jobs) {
-    if (j.status !== "running") continue;
-    active.add(j.id);
-    const rec = ensureChip(j);
-    setChipState(rec, "running");
-    const target = workerChipTarget(j.worker_id, stageRect);
-    if (target) moveChip(rec, target.x, target.y);
-  }
+  renderSeeds(pending);
+  renderCrops(jobs);
+  reconcileHands(workers, jobs);
 
-  for (const j of jobs) {
-    if (!isTerminal(j.status)) continue;
-    if (scene.finished.has(j.id)) continue;
-    scene.finished.add(j.id);
-
-    const rec = ensureChip(j);
-    if (!rec.placed) {
-      const target = workerChipTarget(j.worker_id, stageRect);
-      if (target) moveChip(rec, target.x, target.y);
-    }
-    if (j.status === "succeeded") {
-      setChipState(rec, "done");
-      playOnce(rec, "pop");
-    } else {
-      setChipState(rec, j.status === "cancelled" ? "cancelled" : "failed");
-      playOnce(rec, "shake");
-    }
-    active.add(j.id);
-    setTimeout(() => removeChip(j.id), 1300);
-  }
-
-  for (const [id] of scene.chips) {
-    if (!active.has(id)) removeChip(id);
-  }
-
-  els.clusterHint.textContent = pending.length ? `(${pending.length} queued)` : "";
+  els.clusterHint.textContent = pending.length ? `(${pending.length} waiting to plant)` : "";
 }
 
-// click a queued or running chip to cancel it
-scene.overlay.addEventListener("click", (e) => {
-  const chip = e.target.closest(".chip");
-  if (!chip) return;
-  const rec = scene.chips.get(chip.dataset.id);
-  if (rec && (rec.status === "pending" || rec.status === "running")) {
-    cancelJob(chip.dataset.id);
-  }
+// Click a crop to uproot it.
+farm.crops.addEventListener("click", (e) => {
+  const crop = e.target.closest(".crop");
+  if (!crop || crop.classList.contains("uprooted")) return;
+  cancelJob(crop.dataset.id);
 });
 
 // --- tables --------------------------------------------------------------
@@ -438,7 +582,7 @@ function renderJobs(jobs) {
       const full = jobCommand(j);
       const cancelable = j.status === "pending" || j.status === "running";
       const action = cancelable
-        ? `<button class="btn-cancel" data-cancel="${j.id}">cancel</button>`
+        ? `<button class="btn-cancel" data-cancel="${j.id}">uproot</button>`
         : "";
       return `
       <tr>
@@ -471,9 +615,9 @@ async function poll() {
     ]);
     lastWorkers = workers || [];
     lastJobs = jobs || [];
-    fireEvents(lastJobs); // must run before renderScene so reactions land on sprites
+    fireEvents(lastJobs); // before render, so reactions land on live sprites
     renderStats(lastWorkers, lastJobs);
-    renderScene(lastWorkers, lastJobs);
+    renderFarm(lastWorkers, lastJobs);
     renderWorkers(lastWorkers);
     renderJobs(lastJobs);
     els.connStatus.innerHTML = '<span class="dot"></span> connected';
@@ -485,10 +629,25 @@ async function poll() {
   }
 }
 
+// Crops keep growing between polls, so tick the growth stages on their own
+// timer. Without this a job that runs for eight seconds would visibly
+// jump between sizes once per poll instead of growing.
+setInterval(() => {
+  for (const [id, el] of farm.cropEls) {
+    const job = lastJobs.find((j) => j.id === id);
+    if (!job || job.status !== "running") continue;
+    const want = cropClass(job, "growing");
+    if (el.className !== want) el.className = want;
+  }
+}, 500);
+
 let resizeTimer = null;
 window.addEventListener("resize", () => {
   clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(() => renderScene(lastWorkers, lastJobs), 150);
+  resizeTimer = setTimeout(() => {
+    layoutFarm();
+    renderFarm(lastWorkers, lastJobs);
+  }, 150);
 });
 
 els.addWorker.addEventListener("click", async () => {
@@ -498,18 +657,18 @@ els.addWorker.addEventListener("click", async () => {
   try {
     const res = await authFetch("/v1/dev/spawn-worker", { method: "POST" });
     if (res.status === 404) {
-      // The control plane runs with auth on, which removes this route:
-      // spawning a process on the host only makes sense when the browser
-      // and the control plane are the same machine. Retire the button.
+      // Auth is on, which removes this route: spawning a process on the
+      // host only makes sense when the browser and the control plane are
+      // the same machine.
       els.addWorker.remove();
-      els.clusterHint.textContent = "(start workers with: dispatch-worker -token ...)";
+      els.clusterHint.textContent = "(start farmhands with: dispatch-worker -token ...)";
       return;
     }
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
       throw new Error(body.error || `status ${res.status}`);
     }
-    els.addWorker.textContent = "worker starting...";
+    els.addWorker.textContent = "farmhand arriving...";
     setTimeout(poll, 3000);
     setTimeout(() => {
       els.addWorker.textContent = original;
@@ -531,7 +690,7 @@ els.form.addEventListener("submit", async (e) => {
   const args = argsRaw ? argsRaw.split(/\s+/) : [];
   const num = (name) => parseInt(data.get(name), 10) || 0;
 
-  els.feedback.textContent = "submitting...";
+  els.feedback.textContent = "sowing...";
   els.feedback.className = "feedback";
 
   try {
@@ -562,5 +721,6 @@ els.form.addEventListener("submit", async (e) => {
   }
 });
 
+layoutFarm();
 poll();
 setInterval(poll, POLL_INTERVAL_MS);

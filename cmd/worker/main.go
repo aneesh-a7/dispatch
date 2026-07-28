@@ -263,6 +263,22 @@ func execute(ctx context.Context, job *types.Job, sink *outputSink, sbOpts sandb
 	cmd := exec.CommandContext(ctx, job.Command, job.Args...)
 	cmd.Stdout = sink
 	cmd.Stderr = sink
+
+	// Cancelling the context kills the job's direct child, but a shell
+	// leaves its own children running, and those grandchildren inherit
+	// the output pipe. Without a WaitDelay, Wait blocks until every
+	// writer closes that pipe, so cancelling `sh -c "sleep 300"` killed
+	// the shell and then sat there for five minutes waiting on the sleep
+	// it had orphaned. The job was reported cancelled, eventually, which
+	// is the worst version: the user saw their cancellation accepted and
+	// nothing appear to happen.
+	//
+	// WaitDelay caps how long Wait will hang around for that I/O after
+	// the context is done, then closes the pipes and returns. On Windows
+	// the sandbox's job object then kills the orphan on Close; on Linux
+	// the process group serves the same purpose.
+	cmd.WaitDelay = 2 * time.Second
+
 	sb.Apply(cmd)
 
 	if err := cmd.Start(); err != nil {

@@ -179,45 +179,333 @@ button.ghost:hover { background: color-mix(in srgb, var(--claude) 14%, transpare
 button.ghost:active { transform: translateY(1px); }
 button.ghost:disabled { opacity: 0.5; cursor: default; }
 
-.stage {
+/* --- the farm ---------------------------------------------------------
+   A top-down field. Jobs are crops, workers are farmhands who walk out
+   to tend them. Everything here is derived from the existing palette:
+   the greens and browns are the panel and accent colours pushed around,
+   not a new scheme. */
+
+.farm {
   position: relative;
-  height: 300px;
+  height: 360px;
   overflow: hidden;
   border-radius: 8px;
+  background: #10180f;
+  cursor: default;
+}
+
+/* Grass, drawn as soft patches plus a faint mow-stripe so the ground
+   reads as a surface rather than a flat fill. */
+.farm-ground {
+  position: absolute;
+  inset: 0;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.015), transparent 30%),
-    repeating-linear-gradient(90deg, transparent, transparent 39px, rgba(255, 255, 255, 0.02) 39px, rgba(255, 255, 255, 0.02) 40px),
-    var(--bg-2);
+    radial-gradient(120px 80px at 12% 78%, rgba(63, 185, 80, 0.07), transparent 70%),
+    radial-gradient(160px 90px at 78% 22%, rgba(63, 185, 80, 0.055), transparent 70%),
+    radial-gradient(100px 70px at 55% 92%, rgba(63, 185, 80, 0.05), transparent 70%),
+    repeating-linear-gradient(90deg,
+      rgba(255, 255, 255, 0.014) 0 44px,
+      transparent 44px 88px),
+    linear-gradient(180deg, #16210f, #101a0d);
 }
 
-.queue-box {
+/* The seed shed: where queued jobs wait to be planted. */
+.shed {
   position: absolute;
-  left: 0; top: 0; bottom: 0;
-  width: 168px;
-  border-right: 1px dashed var(--border);
-  background: linear-gradient(180deg, rgba(139, 151, 168, 0.05), transparent);
+  left: 14px; top: 42px;
+  width: 96px; height: 74px;
+  background: linear-gradient(180deg, #2a2118, #1d180f);
+  border: 1px solid #3a2f22;
+  border-radius: 4px;
+  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.45);
 }
-
-.worker-row {
+.shed-roof {
   position: absolute;
-  left: 188px; right: 12px; top: 30px; bottom: 16px;
-  display: flex;
-  flex-wrap: wrap;
-  align-content: flex-end;
-  gap: 26px 34px;
+  left: -8px; right: -8px; top: -14px;
+  height: 20px;
+  background: linear-gradient(180deg, var(--claude), #8f4a30);
+  border-radius: 3px 3px 1px 1px;
+  box-shadow: 0 2px 0 rgba(0, 0, 0, 0.3);
 }
-
-.lane-label {
+.shed-door {
   position: absolute;
-  top: 8px; left: 10px;
-  font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em;
+  left: 50%; bottom: 0;
+  width: 30px; height: 40px;
+  margin-left: -15px;
+  background: linear-gradient(180deg, #171208, #0d0a05);
+  border: 1px solid #3a2f22;
+  border-bottom: none;
+  border-radius: 3px 3px 0 0;
+}
+.shed-label {
+  position: absolute;
+  left: 14px; top: 122px;
+  width: 96px;
+  text-align: center;
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.07em;
   color: var(--muted);
 }
 
-.stage-empty { color: var(--muted); font-size: 13px; align-self: center; max-width: 240px; }
-.stage-empty strong { color: var(--claude-lite); font-weight: 600; }
+/* Seeds waiting outside the shed, one per queued job. */
+.seeds { position: absolute; left: 0; top: 0; right: 0; bottom: 0; z-index: 4; }
+.seed {
+  position: absolute;
+  width: 12px; height: 12px;
+  border-radius: 50% 50% 50% 20%;
+  background: linear-gradient(180deg, var(--pending), #6b7688);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
+  transform: translate(-50%, -50%) rotate(-20deg);
+  transition: opacity 0.3s ease;
+  animation: seedIdle 2.2s ease-in-out infinite;
+}
+@keyframes seedIdle {
+  0%, 100% { margin-top: 0; }
+  50%      { margin-top: -2px; }
+}
+.seed.leaving { opacity: 0; }
 
-.chips-overlay { position: absolute; inset: 0; z-index: 6; }
+/* A seed that cannot be planted yet because it is waiting on another
+   job: tied down, and holding still while the others bob. */
+.seed.blocked {
+  background: linear-gradient(180deg, #4a5563, #333c48);
+  animation: none;
+  opacity: 0.75;
+}
+.seed.blocked::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  border: 1px dashed var(--muted);
+  border-radius: 50%;
+  opacity: 0.7;
+  animation: spinSlow 4s linear infinite;
+}
+
+/* A recurring job's seed carries a sundial peg, so you can tell at a
+   glance which work will come back around. */
+.seed.recurring::before {
+  content: "";
+  position: absolute;
+  right: -5px; top: -5px;
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  border: 1px solid var(--claude-lite);
+  border-top-color: transparent;
+  animation: spinSlow 2.5s linear infinite;
+}
+
+/* Tilled soil plots. Drawn once per layout, purely decorative. */
+.plots { position: absolute; inset: 0; z-index: 1; }
+.plot {
+  position: absolute;
+  width: 46px; height: 34px;
+  margin: -17px 0 0 -23px;
+  border-radius: 5px;
+  background:
+    repeating-linear-gradient(90deg,
+      rgba(0, 0, 0, 0.16) 0 3px,
+      transparent 3px 9px),
+    linear-gradient(180deg, #3a2b1d, #271d13);
+  box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.04), 0 3px 8px rgba(0, 0, 0, 0.4);
+}
+
+/* --- crops ------------------------------------------------------------- */
+
+.crops { position: absolute; inset: 0; z-index: 5; }
+
+.crop {
+  position: absolute;
+  width: 34px; height: 44px;
+  margin: -34px 0 0 -17px;
+  cursor: pointer;
+  transition: opacity 0.35s ease, transform 0.35s ease;
+}
+.crop .stem {
+  position: absolute;
+  left: 50%; bottom: 0;
+  width: 3px;
+  margin-left: -1.5px;
+  height: 6px;
+  background: linear-gradient(180deg, #4e8f3d, #2f5a25);
+  border-radius: 2px;
+  transition: height 0.6s ease;
+}
+.crop .leaf {
+  position: absolute;
+  bottom: 4px; left: 50%;
+  width: 9px; height: 6px;
+  background: #4e8f3d;
+  border-radius: 60% 10% 60% 10%;
+  opacity: 0;
+  transition: opacity 0.4s ease, transform 0.5s ease;
+}
+.crop .leaf.l { transform: translate(-11px, 0) rotate(-18deg); }
+.crop .leaf.r { transform: translate(2px, 0) rotate(18deg) scaleX(-1); }
+.crop .head {
+  position: absolute;
+  left: 50%; bottom: 6px;
+  width: 0; height: 0;
+  margin-left: 0;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, var(--claude-lite), var(--claude));
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.45);
+  transform: translateX(-50%);
+  transition: width 0.5s ease, height 0.5s ease, bottom 0.5s ease, background 0.3s ease;
+}
+
+/* Growth stages, driven by how long the job has been running. */
+.crop.stage-0 .stem { height: 6px; }
+.crop.stage-1 .stem { height: 14px; }
+.crop.stage-1 .leaf { opacity: 1; }
+.crop.stage-2 .stem { height: 24px; }
+.crop.stage-2 .leaf { opacity: 1; }
+.crop.stage-2 .head { width: 12px; height: 12px; bottom: 20px; }
+.crop.stage-3 .stem { height: 30px; }
+.crop.stage-3 .leaf { opacity: 1; }
+.crop.stage-3 .head { width: 18px; height: 18px; bottom: 26px; }
+
+/* Ripe: the moment before harvest. */
+.crop.done .head {
+  width: 20px; height: 20px; bottom: 28px;
+  background: radial-gradient(circle at 35% 30%, #6ee787, var(--succeeded));
+  animation: cropRipe 0.5s ease;
+}
+@keyframes cropRipe {
+  0%   { transform: translateX(-50%) scale(0.7); }
+  55%  { transform: translateX(-50%) scale(1.25); }
+  100% { transform: translateX(-50%) scale(1); }
+}
+
+/* Withered: a failed job. Browns out and droops. */
+.crop.failed .stem { background: linear-gradient(180deg, #6b5330, #3d2f1b); }
+.crop.failed .leaf { background: #6b5330; transform: translate(-11px, 3px) rotate(-52deg); }
+.crop.failed .leaf.r { transform: translate(2px, 3px) rotate(52deg) scaleX(-1); }
+.crop.failed .head {
+  background: radial-gradient(circle at 35% 30%, #a2635c, var(--failed));
+  animation: cropWilt 0.6s ease forwards;
+}
+@keyframes cropWilt {
+  0%   { transform: translateX(-50%) rotate(0deg); }
+  100% { transform: translateX(-50%) rotate(28deg) translateY(4px); }
+}
+
+/* THE UPROOT. A cancelled job is yanked out of the ground and thrown.
+   This is the one animation that should look violent: it is the only
+   place in the whole dashboard where a human deliberately destroyed
+   something, and it should read that way at a glance. */
+.crop.uprooted {
+  animation: uproot 0.75s cubic-bezier(0.3, -0.4, 0.7, 1) forwards;
+  pointer-events: none;
+}
+@keyframes uproot {
+  0%   { transform: translateY(0) rotate(0deg) scale(1); opacity: 1; }
+  18%  { transform: translateY(6px) rotate(-6deg) scale(1.06, 0.92); opacity: 1; }
+  40%  { transform: translateY(-46px) rotate(-38deg) scale(1); opacity: 1; }
+  100% { transform: translateY(-104px) translateX(46px) rotate(-160deg) scale(0.75); opacity: 0; }
+}
+.crop.uprooted .head {
+  background: radial-gradient(circle at 35% 30%, #e8c46b, var(--cancelled));
+}
+/* Dirt kicked up where the crop was torn out. */
+.crop.uprooted::after {
+  content: "";
+  position: absolute;
+  left: 50%; bottom: -2px;
+  width: 22px; height: 6px;
+  margin-left: -11px;
+  border-radius: 50%;
+  background: rgba(122, 92, 58, 0.85);
+  animation: dirtPuff 0.6s ease-out forwards;
+}
+@keyframes dirtPuff {
+  0%   { transform: scale(0.3); opacity: 0.9; }
+  100% { transform: scale(2.6); opacity: 0; }
+}
+
+@keyframes spinSlow { to { transform: rotate(360deg); } }
+
+/* Recurring job: a sundial peg beside the plot. */
+.crop.recurring::after {
+  content: "";
+  position: absolute;
+  right: -2px; bottom: 2px;
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  border: 1px solid var(--claude-lite);
+  border-top-color: transparent;
+  animation: spinSlow 2.5s linear infinite;
+}
+
+/* --- farmhands --------------------------------------------------------- */
+
+.hands { position: absolute; inset: 0; z-index: 7; }
+
+/* The farmhand wrapper positions the existing .worker sprite on the
+   field. The sprite markup and every one of its animations are unchanged;
+   it just has somewhere to walk to now. */
+.farmhand {
+  position: absolute;
+  left: 0; top: 0;
+  transform: translate(-50%, -100%);
+  transition: transform 1.1s cubic-bezier(0.45, 0.05, 0.3, 1);
+  will-change: transform;
+}
+.farmhand .worker { width: 62px; }
+.farmhand .worker-name {
+  font-size: 9px;
+  white-space: nowrap;
+}
+/* A slight lean in the direction of travel sells the walk without
+   needing a second sprite frame. */
+.farmhand.walking .sprite { animation: walkLean 0.42s ease-in-out infinite; }
+@keyframes walkLean {
+  0%, 100% { transform: rotate(-3deg); }
+  50%      { transform: rotate(3deg); }
+}
+
+/* A cottage behind each farmhand's home position. Its own layer, so
+   rebuilding the plot grid on resize cannot take the cottages with it. */
+.cottages { position: absolute; inset: 0; z-index: 2; }
+
+.cottage {
+  position: absolute;
+  width: 54px; height: 42px;
+  margin: -42px 0 0 -27px;
+  background: linear-gradient(180deg, #232c39, #161d27);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  z-index: 2;
+}
+.cottage::before {
+  content: "";
+  position: absolute;
+  left: -6px; right: -6px; top: -10px;
+  height: 14px;
+  background: linear-gradient(180deg, #3d4b5e, #2a3441);
+  border-radius: 3px 3px 0 0;
+}
+.cottage::after {
+  content: "";
+  position: absolute;
+  left: 50%; bottom: 6px;
+  width: 14px; height: 12px;
+  margin-left: -7px;
+  background: var(--cancelled);
+  opacity: 0.75;
+  border-radius: 2px;
+  box-shadow: 0 0 10px rgba(217, 164, 65, 0.5);
+}
+/* Lights out when the farmhand is gone. */
+.cottage.dark::after { background: #2b3340; opacity: 0.5; box-shadow: none; }
+
+.stage-empty {
+  position: absolute;
+  left: 50%; top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 8;
+  color: var(--muted); font-size: 13px; text-align: center; max-width: 260px;
+}
+.stage-empty strong { color: var(--claude-lite); font-weight: 600; }
 
 .stage-legend {
   display: flex; flex-wrap: wrap; gap: 14px;
@@ -396,51 +684,6 @@ button.ghost:disabled { opacity: 0.5; cursor: default; }
   100% { opacity: 0; }
 }
 
-/* --- job chips --------------------------------------------------------- */
-
-.chip {
-  position: absolute; top: 0; left: 0;
-  max-width: 130px;
-  padding: 4px 9px;
-  border-radius: 7px;
-  font-size: 11px;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  background: color-mix(in srgb, var(--pending) 18%, var(--panel));
-  border: 1px solid color-mix(in srgb, var(--pending) 40%, transparent);
-  color: var(--text);
-  cursor: pointer;
-  transition: transform 0.55s cubic-bezier(0.2, 0.7, 0.2, 1),
-              opacity 0.3s ease, background 0.3s ease, border-color 0.3s ease, box-shadow 0.15s ease;
-  will-change: transform;
-}
-.chip:hover { box-shadow: 0 0 0 2px rgba(248, 81, 73, 0.5); }
-.chip:hover .chip-inner::after { content: " \00d7"; color: var(--failed); font-weight: 700; }
-.chip.spawning { opacity: 0; }
-.chip.leaving { opacity: 0; }
-
-.chip.pending { background: color-mix(in srgb, var(--pending) 18%, var(--panel)); border-color: color-mix(in srgb, var(--pending) 42%, transparent); }
-.chip.running { background: color-mix(in srgb, var(--running) 22%, var(--panel)); border-color: color-mix(in srgb, var(--running) 52%, transparent); }
-.chip.done { background: color-mix(in srgb, var(--succeeded) 30%, var(--panel)); border-color: var(--succeeded); cursor: default; }
-.chip.failed { background: color-mix(in srgb, var(--failed) 30%, var(--panel)); border-color: var(--failed); cursor: default; }
-.chip.cancelled { background: color-mix(in srgb, var(--cancelled) 26%, var(--panel)); border-color: var(--cancelled); cursor: default; text-decoration: line-through; }
-.chip.done:hover, .chip.failed:hover, .chip.cancelled:hover { box-shadow: none; }
-.chip.done:hover .chip-inner::after,
-.chip.failed:hover .chip-inner::after,
-.chip.cancelled:hover .chip-inner::after { content: ""; }
-
-.chip-inner { display: inline-block; pointer-events: none; }
-.chip-inner.pop { animation: pop 0.45s ease; }
-.chip-inner.shake { animation: shake 0.45s ease; }
-@keyframes pop {
-  0% { transform: scale(1); }
-  40% { transform: scale(1.4); }
-  100% { transform: scale(1); }
-}
-@keyframes shake {
-  0%, 100% { transform: translateX(0); }
-  25% { transform: translateX(-4px); }
-  75% { transform: translateX(4px); }
-}
 
 /* --- submit bar -------------------------------------------------------- */
 

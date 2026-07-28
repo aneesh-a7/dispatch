@@ -395,6 +395,42 @@ both `text` and `content`. Slack renders `text`, Discord renders
 usefully to either without dispatch shipping per-service client code,
 while a custom receiver ignores the summary and reads `job`.
 
+### The dashboard is a farm
+
+The cluster view renders jobs as crops and workers as farmhands who walk
+out to tend them. Queued jobs are seeds by the shed, running jobs grow,
+successes are harvested, failures wither, and a cancellation is a
+farmhand tearing the crop out of the ground and throwing it.
+
+The rule I held to while building it: the game layer may not invent
+state. Every position, class and animation is derived from the same
+`/v1/jobs` and `/v1/workers` records the CLI reads. There is no separate
+simulation running alongside the scheduler that could drift from it, and
+nothing on screen that is not also true. Growth stages are the clearest
+case: a crop's height comes from elapsed running time, not from a
+progress percentage, because for an arbitrary shell command no honest
+progress percentage exists. The view can only show what the system
+actually knows.
+
+The sprites themselves are untouched. Farmhands reuse the original
+`.worker` element and every animation that keys off it (`.working`,
+`.dead`, the four `react-*` reactions), so the characters behave exactly
+as they did when they stood in a row. They just have somewhere to be
+now. The palette is the same set of variables too; the greens and browns
+are the existing panel and accent colours pushed around rather than a
+second scheme to keep in sync.
+
+Two things I got wrong on the first pass, both worth recording because
+they are the same mistake in different clothes. Cottages were appended
+into the plot container, which `layoutFarm` rebuilds wholesale on every
+resize, so resizing silently deleted every cottage and left the
+reconciler holding detached elements it went on styling forever. And the
+"waiting on a dependency" style was written for crops, when a blocked
+job is by definition still pending and therefore still a seed, so the
+rule could never match anything. Both are what happens when you write
+the stylesheet for the picture in your head instead of for the states
+the system can actually be in.
+
 ## What's deliberately out of scope
 
 - **Escape-proof isolation.** The sandbox above raises the floor a long

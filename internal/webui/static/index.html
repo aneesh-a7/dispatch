@@ -34,28 +34,35 @@
       <div class="stat" id="stat-failed"><div class="stat-value">0</div><div class="stat-label">failed</div></div>
     </section>
 
-    <!-- Hero: the cluster stage -->
+    <!-- Hero: the farm. Every job is a crop; every worker is a farmhand
+         who walks out to tend it. The sprites are unchanged, they just
+         have somewhere to be now. -->
     <section class="panel stage-panel">
       <div class="panel-head">
-        <h2>Cluster <span id="cluster-hint" class="count"></span></h2>
-        <button id="add-worker" type="button" class="ghost">+ Add worker</button>
+        <h2>The Farm <span id="cluster-hint" class="count"></span></h2>
+        <button id="add-worker" type="button" class="ghost">+ Hire farmhand</button>
       </div>
-      <div id="stage" class="stage">
-        <div id="queue-box" class="queue-box">
-          <div class="lane-label">Queue</div>
+      <div id="stage" class="farm">
+        <div class="farm-ground" aria-hidden="true"></div>
+        <div class="shed" aria-hidden="true">
+          <div class="shed-roof"></div>
+          <div class="shed-door"></div>
         </div>
-        <div id="worker-row" class="worker-row">
-          <p id="no-workers" class="stage-empty">No workers yet. Click <strong>+ Add worker</strong> to open one.</p>
-        </div>
-        <div id="chips-overlay" class="chips-overlay"></div>
+        <div class="shed-label">Seed shed</div>
+        <div id="seeds" class="seeds"></div>
+        <div id="plots" class="plots" aria-hidden="true"></div>
+        <div id="cottages" class="cottages" aria-hidden="true"></div>
+        <div id="crops" class="crops"></div>
+        <div id="hands" class="hands"></div>
+        <p id="no-workers" class="stage-empty">No farmhands yet. Click <strong>+ Hire farmhand</strong> to open one.</p>
       </div>
       <div class="stage-legend">
-        <span><i class="swatch pending"></i> queued</span>
-        <span><i class="swatch running"></i> running</span>
-        <span><i class="swatch done"></i> succeeded</span>
-        <span><i class="swatch failed"></i> failed</span>
-        <span><i class="swatch cancelled"></i> cancelled</span>
-        <span class="legend-tip">tip: click a job to cancel it</span>
+        <span><i class="swatch pending"></i> seed waiting</span>
+        <span><i class="swatch running"></i> growing</span>
+        <span><i class="swatch done"></i> harvested</span>
+        <span><i class="swatch failed"></i> withered</span>
+        <span><i class="swatch cancelled"></i> uprooted</span>
+        <span class="legend-tip">tip: click a crop to uproot it</span>
       </div>
     </section>
 
