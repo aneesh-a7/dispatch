@@ -16,6 +16,37 @@ building yourself: durable state, failure detection, at-least-once
 execution. No auto-scaling groups, no YAML novels, no admission
 controllers.
 
+## What you'd use it for
+
+```bash
+# Run something big wherever there's room for it
+dispatchctl submit -cpu 4 -memory 8192 -- python3 train.py
+
+# Chain steps, so a failure in one doesn't leave you guessing about the rest
+FETCH=$(dispatchctl submit -q -- ./fetch.sh)
+dispatchctl submit -after "$FETCH" -- ./transform.sh
+
+# Cron, except every run is recorded and a failure finds you
+dispatchctl submit -every 6h -- ./backup.sh
+
+# Watch a four hour job instead of waiting for it
+dispatchctl logs -f <job-id>
+```
+
+Concretely, the things it turns out to be good at: long batch runs spread
+across machines you own, nightly pipelines that are several jobs rather
+than one brittle script, replacing a scatter of crontabs on four
+different boxes with something that keeps history, and queues of
+embarrassingly parallel work that you want to walk away from without
+anything being silently dropped. Point it at a webhook and it tells you
+when things finish, which was the whole point.
+
+If several people are submitting, it has token auth and sandboxes jobs by
+default, so a job can't read the worker's environment or eat its memory.
+
+Seven worked examples, each verified against this version, are in
+[docs/USE_CASES.md](docs/USE_CASES.md).
+
 ## How it works
 
 ```
